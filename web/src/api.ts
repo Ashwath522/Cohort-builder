@@ -1,4 +1,6 @@
-export type FieldKey = 'registered_at' | 'first_purchase_date' | 'last_purchase_date' | 'lifetime_order_count' | 'lifetime_gmv' | 'last_channel' | 'city' | 'categories';
+export type FieldKey = 'registered_at' | 'first_purchase_date' | 'last_purchase_date' | 'lifetime_order_count' | 'lifetime_gmv' | 'last_channel' | 'city' | 'categories' | 'days_since_last_purchase' | 'aov' | 'customer_type';
+export type SortKey = 'last_purchase_date' | 'first_purchase_date' | 'registered_at' | 'lifetime_gmv' | 'lifetime_order_count' | 'aov' | 'days_since_last_purchase';
+export interface Delivery { sortBy: SortKey; dir: 'asc' | 'desc'; limit?: number; holdoutPct: number; suppressDays: number }
 export type FieldType = 'date' | 'number' | 'choice' | 'categories';
 export interface Condition { field: FieldKey | 'custom'; op: string; value?: unknown; filterId?: string; version?: number; params?: Record<string, unknown> }
 export type ParamType = 'number' | 'date' | 'text' | 'category' | 'channel' | 'city';
@@ -10,7 +12,7 @@ export interface CustomFilter { id: string; draft: FilterDefinition; versions: A
 export interface Group { logic: 'AND' | 'OR'; conditions: Array<Condition | Group> }
 export const isGroup = (c: Condition | Group): c is Group => (c as Group).logic !== undefined;
 
-export interface Catalog { fields: Record<FieldKey, { label: string; type: FieldType }>; ops: Record<FieldType, Record<string, string>> }
+export interface Catalog { fields: Record<FieldKey, { label: string; type: FieldType }>; ops: Record<FieldType, Record<string, string>>; sorts: Record<SortKey, string>; customerTypes: string[] }
 export interface Freshness { dataAsOf: string | null; daysOld: number | null; level: 'ok' | 'warn' | 'blocked' }
 export interface DatasetMeta {
   id: string; fileName?: string; uploadedBy: string; uploadedAt: string; dataAsOf: string; expiresAt: string;
@@ -21,7 +23,8 @@ export interface DatasetMeta {
 export interface Cohort {
   id: string; name: string; segmentName: string; rules: Group; rulesVersion: number; source: 'excel' | 'powerbi';
   datasetId?: string; dataAsOf?: string; status: string; createdBy: string; createdAt: string; previewCount?: number;
-  approvedBy?: string; approvedAt?: string; rejectedReason?: string; snapshotCount?: number;
+  approvedBy?: string; approvedAt?: string; rejectedReason?: string; snapshotCount?: number; holdoutCount?: number;
+  delivery?: Delivery; funnel?: Array<{ step: string; count: number; aside?: boolean }>;
   history: Array<{ at: string; by: string; action: string; note?: string }>;
 }
 export interface Run {

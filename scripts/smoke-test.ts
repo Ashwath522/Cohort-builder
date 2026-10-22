@@ -6,6 +6,7 @@ import { matches, validateRules, RuleError, type RuleEnv } from '../server/filte
 import { buildDax, loadMapping } from '../server/sources/dax.js';
 import { decrypt, keysReady } from '../server/crypto.js';
 import { runSql, checkDefinition } from '../server/customFilters.js';
+import { applyDelivery, sortRows } from '../server/delivery.js';
 import type { Group } from '../server/model.js';
 
 let failed = 0;
@@ -31,7 +32,7 @@ ws.eachRow((row, i) => {
   if (lp.slice(6, 10) === '2025') expected++;
 });
 const pilot: Group = { logic: 'AND', conditions: [{ field: 'last_purchase_date', op: 'between', value: ['2025-01-01', '2025-12-31'] }] };
-const got = ds.rows.filter(r => matches(r, pilot)).length;
+const got = ds.rows.filter(r => matches(r, pilot, { asOf: ds.dataAsOf })).length;
 check('pilot count matches independent count', got === expected, `${got} vs ${expected}`);
 
 const env: RuleEnv = { fieldsAvailable: ds.fieldsAvailable, validateCustom: () => { throw new RuleError('no custom'); } };
@@ -49,6 +50,16 @@ const { ids } = await runSql(ds, def, { bought: 'Bed', not_bought: 'Mattress' })
 check('bought-but-not: built-in = developer SQL', bn === ids.size && bn > 0, `${bn} vs ${ids.size}`);
 check('developer SQL: writes are refused', checkDefinition({ ...def, params: [], sql: 'WITH x AS (SELECT 1) DELETE FROM customers' }).length > 0);
 check('order lines loaded', (ds.orderLines?.length ?? 0) > 0, `${ds.orderLines?.length} lines`);
+
+// Delivery rules: sort, top N, control group
+const buyers = ds.rows.filter(r => (r.lifetime_order_count ?? 0) > 0);
+const sorted = sortRows(buyers, 'lifetime_gmv', 'desc', ds.dataAsOf);
+check('sort: highest spend first', sorted.every((r, i) => i === 0 || (sorted[i - 1].lifetime_gmv ?? 0) >= (r.lifetime_gmv ?? 0)));
+const d1 = applyDelivery(buyers, { sortBy: 'lifetime_gmv', dir: 'desc', limit: 500, holdoutPct: 10, suppressDays: 0 }, ds.dataAsOf, 'seg_a');
+const d2 = applyDelivery(buyers, { sortBy: 'lifetime_gmv', dir: 'desc', limit: 500, holdoutPct: 10, suppressDays: 0 }, ds.dataAsOf, 'seg_a');
+check('top N + control group add up', d1.send.length + d1.holdout.length === 500, `${d1.send.length} sent + ${d1.holdout.length} control`);
+check('control group is repeatable', d1.holdout.map(r => r.customer_id).join() === d2.holdout.map(r => r.customer_id).join());
+check('control group ~10%', d1.holdout.length > 25 && d1.holdout.length < 80, `${d1.holdout.length} of 500`);
 
 try { await ingestExcel(fs.readFileSync('sample/sample_missing_email.xlsx'), 'x.xlsx', 'test', '2026-10-20'); check('rejects file without Email', false); }
 catch (e) { check('rejects file without Email', /Validation/.test((e as Error).message)); }

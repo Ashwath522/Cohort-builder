@@ -3,7 +3,12 @@ import ExcelJS from 'exceljs';
 import fs from 'node:fs';
 
 let seed = 42;
-const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+const rnd = () => {                       // mulberry32: small, well-mixed PRNG (repeatable sample data)
+  seed = (seed + 0x6d2b79f5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+};
 const pick = <T,>(a: T[]) => a[Math.floor(rnd() * a.length)];
 const CATS = ['Accessories', 'Bed', 'Decor', 'Dining', 'Furniture-Other', 'Kids', 'Kitchen', 'Living', 'Mattress', 'Outdoor', 'Sofas', 'Wardrobe'];
 const START = Date.UTC(2019, 0, 1), END = Date.UTC(2026, 9, 12);

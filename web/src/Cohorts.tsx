@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { api, post, type Catalog, type Cohort, type FilterButton, type Run } from './api';
 import { describe } from './rules';
+import { Funnel } from './Charts';
 
 const STATUS_CLASS: Record<string, string> = { draft: 'muted', pending_approval: 'warn', approved: 'ok', rejected: 'bad', pushing: 'warn', pushed: 'ok', failed: 'bad' };
 
@@ -39,7 +40,9 @@ export default function Cohorts({ catalog, userId, role, buttons }: { catalog: C
               <td><code>{c.segmentName}</code></td>
               <td>{c.source}{c.dataAsOf && <div className="muted small">as of {c.dataAsOf.slice(0, 10)}</div>}</td>
               <td><span className={`pill ${STATUS_CLASS[c.status]}`}>{c.status.replace('_', ' ')}</span></td>
-              <td>{c.snapshotCount !== undefined ? <><b>{c.snapshotCount.toLocaleString()}</b> <span className="muted small">locked</span></> : c.previewCount?.toLocaleString() ?? '—'}</td>
+              <td>{c.snapshotCount !== undefined
+                ? <><b>{c.snapshotCount.toLocaleString()}</b> <span className="muted small">to send</span>{!!c.holdoutCount && <div className="muted small">+ {c.holdoutCount.toLocaleString()} control group</div>}</>
+                : <>{c.previewCount?.toLocaleString() ?? '—'} <span className="muted small">matched</span></>}</td>
               <td><div className="actions">
                 {isCreator && ['draft', 'rejected'].includes(c.status) && <button disabled={!!busy} onClick={() => act(c, 'submit')}>Submit for approval</button>}
                 {isApprover && c.status === 'pending_approval' && (c.createdBy === userId
@@ -54,6 +57,11 @@ export default function Cohorts({ catalog, userId, role, buttons }: { catalog: C
             </tr>
             {open === c.id && <tr className="details"><td colSpan={6}>
               <div><b>Rules (v{c.rulesVersion}):</b> {describe(c.rules, catalog, buttons)}</div>
+              {c.delivery && <div><b>Delivery:</b> ordered by {catalog.sorts[c.delivery.sortBy]?.toLowerCase()} ({c.delivery.dir === 'desc' ? 'high → low / newest' : 'low → high / oldest'})
+                {c.delivery.limit ? ` · top ${c.delivery.limit.toLocaleString()}` : ' · everyone'}
+                {c.delivery.holdoutPct ? ` · ${c.delivery.holdoutPct}% control group` : ''}
+                {c.delivery.suppressDays ? ` · skip if messaged in last ${c.delivery.suppressDays} days` : ''}</div>}
+              {c.funnel && <Funnel steps={c.funnel} />}
               {c.rejectedReason && <div className="bad-text">Rejected: {c.rejectedReason}</div>}
               <ul className="history">{c.history.map((h, i) => <li key={i}>{h.at.replace('T', ' ').slice(0, 19)} · <b>{h.by}</b> {h.action}{h.note && ` — ${h.note}`}</li>)}</ul>
             </td></tr>}

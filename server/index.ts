@@ -5,8 +5,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config, ctConfigured, pbiConfigured } from './config.js';
 import { keysReady } from './crypto.js';
-import { breakdowns, CATALOG, customConditions, matches, OPS, RuleError, validateRules, type CustomSets, type RuleEnv } from './filter.js';
-import type { Cohort, CustomFilter, CustomerRow, Dataset, FilterDefinition, Group, Run, Snapshot } from './model.js';
+import { analytics, withDerived, CATALOG, CUSTOMER_TYPES, customConditions, fieldValue, matches, OPS, RuleError, validateRules, type CustomSets, type RuleEnv } from './filter.js';
+import { applyDelivery, cleanDelivery, SORTS, sortRows } from './delivery.js';
+import type { Cohort, CustomFilter, CustomerRow, Dataset, Delivery, FilterDefinition, Group, Run, SortKey, Snapshot } from './model.js';
 import { store } from './store.js';
 import { ingestExcel } from './sources/excel.js';
 import { loadMapping, mappedFields, buildDax } from './sources/dax.js';
@@ -49,7 +50,7 @@ app.get('/api/health', (_req, res) => res.json({
   keysReady: keysReady(), clevertap: ctConfigured() ? 'live' : 'dry-run', ctBaseUrl: config.ct.baseUrl,
   powerbi: pbiConfigured() ? 'configured' : 'not-configured', users: USERS,
 }));
-app.get('/api/catalog', (_req, res) => res.json({ fields: CATALOG, ops: OPS }));
+app.get('/api/catalog', (_req, res) => res.json({ fields: CATALOG, ops: OPS, sorts: SORTS, customerTypes: CUSTOMER_TYPES }));
 
 // ── Data sources ──
 app.post('/api/sources/excel', upload.single('file'), h(async (req, res) => {
@@ -71,7 +72,7 @@ app.post('/api/sources/excel', upload.single('file'), h(async (req, res) => {
 }));
 app.get('/api/sources/excel', h((req, res) => {
   userOf(req);
-  res.json(store.listDatasets().map(d => ({ ...d, freshness: freshness(d.dataAsOf) })));
+  res.json(store.listDatasets().map(d => ({ ...d, fieldsAvailable: withDerived(d.fieldsAvailable), freshness: freshness(d.dataAsOf) })));
 }));
 app.delete('/api/sources/excel/:id', h((req, res) => { can(userOf(req), 'creator', 'developer'); store.deleteDataset(req.params.id); forgetDataset(req.params.id); res.json({ ok: true }); }));
 
@@ -90,6 +91,7 @@ app.post('/api/sources/powerbi/test', h(async (req, res) => { userOf(req); res.j
 function excelDataset(id?: string): Dataset {
   const ds = id ? store.getDataset(id) : undefined;
   if (!ds) throw Object.assign(new Error('Dataset not found (it may have expired). Upload the Excel again.'), { status: 404 });
+  ds.fieldsAvailable = withDerived(ds.fieldsAvailable);          // datasets uploaded before derived fields existed
   return ds;
 }
 function envFor(source: 'excel' | 'powerbi', ds?: Dataset): RuleEnv {
@@ -106,7 +108,7 @@ async function resolveCustom(rules: Group, ds: Dataset): Promise<CustomSets> {
 }
 async function evaluateExcel(rules: Group, ds: Dataset): Promise<CustomerRow[]> {
   const sets = await resolveCustom(rules, ds);
-  return ds.rows.filter(r => matches(r, rules, sets));
+  return ds.rows.filter(r => matches(r, rules, { sets, asOf: ds.dataAsOf }));
 }
 function prepare(body: { source: 'excel' | 'powerbi'; datasetId?: string; rules: Group }) {
   if (body.source !== 'excel' && body.source !== 'powerbi') throw new RuleError('Pick a data source');
@@ -122,21 +124,41 @@ app.post('/api/sources/powerbi/dax', h((req, res) => {          // the DAX the f
   res.json({ count: buildDax(rules, loadMapping(), 'count'), fetch: buildDax(rules, loadMapping(), 'fetch', { pageSize: config.pbi.pageSize }) });
 }));
 
-// ── Preview: counts and breakdowns only ──
+// ── Preview: KPIs, charts and the delivery funnel. Counts only, no identities. ──
 app.post('/api/preview', h(async (req, res) => {
   userOf(req);
   const ds = prepare(req.body);
   const { source, rules } = req.body as { source: 'excel' | 'powerbi'; rules: Group };
+  const delivery = cleanDelivery(req.body.delivery, source);
   if (source === 'powerbi') {
     if (!pbiConfigured()) return res.status(400).json({ error: 'Power BI is not configured yet. Use Excel upload for now.' });
     const [count, refreshed] = await Promise.all([pbiCount(rules), lastRefresh().catch(() => null)]);
-    return res.json({ count, total: null, breakdowns: null, sample: [], freshness: freshness(refreshed ?? undefined) });
+    return res.json({ count, total: null, analytics: null, funnel: null, freshness: freshness(refreshed ?? undefined) });
   }
   const hit = await evaluateExcel(rules, ds!);
+  const { funnel } = applyDelivery(hit, delivery, ds!.dataAsOf, String(req.body.segmentName ?? ''));
+  res.json({ count: hit.length, total: ds!.rows.length, analytics: analytics(hit, ds!.rows.length, ds!.dataAsOf), funnel, freshness: freshness(ds!.dataAsOf) });
+}));
+
+/** The matching customers as a sortable, paged table. Emails are masked. */
+app.post('/api/preview/rows', h(async (req, res) => {
+  userOf(req);
+  const ds = prepare(req.body);
+  if (!ds) return res.status(400).json({ error: 'The customer table is available for Excel data; Power BI preview shows counts only.' });
+  const sortBy = (req.body.sortBy in SORTS ? req.body.sortBy : 'lifetime_gmv') as SortKey;
+  const dir = req.body.dir === 'asc' ? 'asc' : 'desc';
+  const pageSize = Math.min(Math.max(Number(req.body.pageSize) || 25, 5), 100);
+  const sorted = sortRows(await evaluateExcel(req.body.rules, ds), sortBy, dir, ds.dataAsOf);
+  const page = Math.min(Math.max(Number(req.body.page) || 1, 1), Math.max(1, Math.ceil(sorted.length / pageSize)));
   res.json({
-    count: hit.length, total: ds!.rows.length, breakdowns: breakdowns(hit),
-    sample: hit.slice(0, 5).map(r => ({ customer_id: r.customer_id, email: r.email_masked, last_purchase_date: r.last_purchase_date ?? null })),
-    freshness: freshness(ds!.dataAsOf),
+    total: sorted.length, page, pageSize, sortBy, dir,
+    rows: sorted.slice((page - 1) * pageSize, page * pageSize).map(r => ({
+      customer_id: r.customer_id, email: r.email_masked, city: r.city ?? null, last_channel: r.last_channel ?? null,
+      registered_at: r.registered_at ?? null, first_purchase_date: r.first_purchase_date ?? null, last_purchase_date: r.last_purchase_date ?? null,
+      days_since_last_purchase: fieldValue(r, 'days_since_last_purchase', ds.dataAsOf) ?? null,
+      lifetime_order_count: r.lifetime_order_count ?? null, lifetime_gmv: r.lifetime_gmv ?? null,
+      aov: fieldValue(r, 'aov', ds.dataAsOf) ?? null, categories: r.categories ?? [],
+    })),
   });
 }));
 
@@ -218,10 +240,11 @@ app.post('/api/cohorts', h(async (req, res) => {
   if (!segmentName || !SEGMENT_RE.test(segmentName)) return res.status(400).json({ error: 'Segment name: 3–80 letters, numbers, _ or -' });
   if (store.cohorts().some(c => c.segmentName === segmentName)) return res.status(400).json({ error: 'That segment name is already used' });
   const ds = prepare({ source: source as 'excel' | 'powerbi', datasetId, rules: rules as Group });
+  const delivery: Delivery = cleanDelivery(req.body.delivery, source as 'excel' | 'powerbi');
   const c: Cohort = {
     id: `c_${crypto.randomUUID().slice(0, 8)}`, name, segmentName, rules: rules as Group, rulesVersion: 1,
     source: source as 'excel' | 'powerbi', datasetId: ds?.id, dataAsOf: ds?.dataAsOf, status: 'draft', createdBy: u.id, createdAt: now(),
-    previewCount: ds ? (await evaluateExcel(rules as Group, ds)).length : undefined,
+    previewCount: ds ? (await evaluateExcel(rules as Group, ds)).length : undefined, delivery,
     history: [{ at: now(), by: u.id, action: 'created' }],
   };
   store.saveCohort(c);
@@ -273,15 +296,18 @@ app.post('/api/cohorts/:id/approve', h(async (req, res) => {
   }
   const fr = freshness(dataAsOf);
   if (fr.level === 'blocked') return res.status(409).json({ error: `Data is ${fr.daysOld} days old (limit ${config.staleBlockDays}). Refresh / re-export it first.` });
-  if (audience.length === 0) return res.status(409).json({ error: 'The audience is empty' });
+  const delivery = cleanDelivery(c.delivery, c.source);
+  const { send, holdout, funnel } = applyDelivery(audience, delivery, (dataAsOf ?? now()).slice(0, 10), c.segmentName, c.id);
+  if (send.length === 0) return res.status(409).json({ error: 'Nobody left to send to after the delivery rules' });
 
   const snap: Snapshot = {
     cohortId: c.id, rulesVersion: c.rulesVersion, source: c.source, dataAsOf, createdAt: now(),
-    audience: audience.map(({ customer_id, email_hash, email_enc }) => ({ customer_id, email_hash, email_enc })),
+    audience: send.map(({ customer_id, email_hash, email_enc }) => ({ customer_id, email_hash, email_enc })),
+    holdout: holdout.map(({ customer_id, email_hash }) => ({ customer_id, email_hash })),
   };
   store.saveSnapshot(snap);
-  Object.assign(c, { status: 'approved', approvedBy: u.id, approvedAt: now(), snapshotCount: snap.audience.length, dataAsOf });
-  c.history.push({ at: now(), by: u.id, action: 'approved', note: `${snap.audience.length} customers locked` });
+  Object.assign(c, { status: 'approved', approvedBy: u.id, approvedAt: now(), snapshotCount: send.length, holdoutCount: holdout.length, funnel, dataAsOf });
+  c.history.push({ at: now(), by: u.id, action: 'approved', note: `${send.length} to send${holdout.length ? `, ${holdout.length} in control group` : ''} locked` });
   store.saveCohort(c);
   log(`cohort ${c.id} approved: ${snap.audience.length} customers`);
   res.json(c);
@@ -304,6 +330,7 @@ app.post('/api/cohorts/:id/push', h(async (req, res) => {
   try {
     await pushToCleverTap(snap, run, u.id, () => store.saveRun(run));
     run.status = 'success'; c.status = 'pushed';
+    if (run.mode === 'clevertap') { snap.pushedAt = now(); store.saveSnapshot(snap); }   // feeds "not messaged in the last N days"
     c.history.push({ at: now(), by: u.id, action: run.mode === 'dry-run' ? 'dry run' : 'pushed to CleverTap', note: `${run.rowsSent} rows` });
   } catch (e) {
     run.status = 'failed'; run.error = (e as Error).message; c.status = 'failed';

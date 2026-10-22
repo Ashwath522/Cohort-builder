@@ -4,8 +4,9 @@ import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { encrypt, hashEmail, isValidEmail, maskEmail, normaliseEmail } from '../crypto.js';
 import type { CustomerRow, Dataset, FieldKey, OrderLine, ValidationReport } from '../model.js';
+import { withDerived } from '../filter.js';
 
-type InternalField = FieldKey | 'customer_id' | 'email' | 'phone';
+type InternalField = Exclude<FieldKey, 'days_since_last_purchase' | 'aov' | 'customer_type'> | 'customer_id' | 'email' | 'phone';
 
 /** Header aliases (case/space-insensitive). Power BI "Customer Audience" export names are included. */
 const ALIASES: Record<InternalField, string[]> = {
@@ -200,8 +201,8 @@ export async function ingestExcel(buf: Buffer, fileName: string, uploadedBy: str
   if (ri.duplicateEmail) report.warnings.push(`${ri.duplicateEmail} rows skipped: duplicate email`);
   if (ri.badDate) report.warnings.push(`${ri.badDate} date cells could not be read and were left blank`);
   if (ri.badNumber) report.warnings.push(`${ri.badNumber} number cells could not be read and were left blank`);
-  const fieldsAvailable = (Object.keys(report.columnsFound) as InternalField[])
-    .filter((f): f is FieldKey => f !== 'customer_id' && f !== 'email' && f !== 'phone');
+  const fieldsAvailable = withDerived(Object.keys(report.columnsFound)
+    .filter(f => f !== 'customer_id' && f !== 'email' && f !== 'phone') as FieldKey[]);
   const missing = (['last_purchase_date', 'lifetime_order_count', 'categories'] as FieldKey[]).filter(f => !fieldsAvailable.includes(f));
   if (missing.length) report.warnings.push(`Not in this file, so these filters are unavailable: ${missing.join(', ')}`);
 

@@ -38,6 +38,39 @@ Without CleverTap settings the push is a **dry run**: the CSV is built and measu
 
 Offline checks: `npm test`
 
+## Marketing window: audience, charts and "who gets it"
+
+After **Preview count** the marketing window shows three things.
+
+**1. Audience.**
+- KPI tiles: customers matched, lifetime spend, average spend and orders per buyer, median days since last order.
+- Six charts:
+  - customer type (donut);
+  - last channel (donut);
+  - recency buckets;
+  - lifetime spend bands;
+  - top categories;
+  - top cities.
+- Hover any bar or slice for its exact count and share.
+
+**2. Who gets it.** These business rules are saved with the cohort and applied when it's approved:
+
+| Rule | What it does |
+|---|---|
+| Order customers by + direction | Sorts by lifetime spend, orders, average order value, last or first purchase, registration date or days since last purchase |
+| Send to: Only the top… | Keeps the first N in that order, e.g. the top 5,000 spenders (Excel source for now) |
+| Control group | Keeps 5/10/20% aside and doesn't send to them, so you can measure campaign lift. The pick is repeatable for a given segment name. |
+| Skip people messaged in the last N days | Leaves out anyone already sent in another pushed cohort recently, so customers aren't over-messaged |
+
+A funnel shows the count at each step: matched → after skip → top N → control group → will be sent.
+
+**3. Customers table.**
+- Shows the matching customers with **masked** emails, 25 per page.
+- Click a blue column header to sort, e.g. lifetime spend high → low or last purchase newest first.
+- The table order is the same order "Only the top…" uses.
+
+New built-in filters: **Days since last purchase**, **Avg order value**, **Customer type** (never bought / one-time / repeat).
+
 ## Developer window: make a new filter button
 
 1. Open `/developer` (acting as *Dev (Analytics)*) and click **+ New filter button**.

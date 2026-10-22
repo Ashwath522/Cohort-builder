@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { CATALOG, nextDay } from '../filter.js';
+import { CATALOG, nextDay, withDerived } from '../filter.js';
 import type { Condition, FieldKey, Group } from '../model.js';
 import { isGroup } from '../model.js';
 import { filters, renderDax } from '../customFilters.js';
@@ -18,7 +18,7 @@ export const loadMapping = (): PbiMapping =>
   JSON.parse(fs.readFileSync(path.resolve('config/powerbi-mapping.json'), 'utf8'));
 
 export const mappedFields = (m: PbiMapping) =>
-  (Object.keys(m.fields) as FieldKey[]).filter(f => m.fields[f]);
+  withDerived((Object.keys(m.fields) as FieldKey[]).filter(f => m.fields[f]));
 
 const str = (v: unknown) => `"${String(v).replace(/"/g, '""')}"`;      // DAX string escaping
 const date = (iso: string) => { const [y, mo, d] = iso.split('-').map(Number); return `DATE(${y},${mo},${d})`; };
@@ -38,7 +38,19 @@ export function buildDax(rules: Group, m: PbiMapping, mode: 'count' | 'fetch', o
       const inSet = `${m.customerId} IN (${renderDax(def, c.params ?? {})})`;
       return c.op === 'exclude' ? `NOT (${inSet})` : `(${inSet})`;
     }
-    const ref = m.fields[c.field];
+    // Derived fields are computed in DAX from the mapped base columns / measures.
+    const L = m.fields.last_purchase_date, G = m.fields.lifetime_gmv, C = m.fields.lifetime_order_count;
+    if (c.field === 'customer_type') {
+      const part = (t: string) => t === 'Never bought' ? `(ISBLANK(${C}) || ${C} = 0)` : t === 'One-time' ? `${C} = 1` : `${C} > 1`;
+      const any = `(${(c.value as string[]).map(part).join(' || ')})`;
+      return c.op === 'in' ? any : `NOT ${any}`;
+    }
+    if (c.field === 'days_since_last_purchase') {
+      const d = `DATEDIFF(${L}, TODAY(), DAY)`;
+      if (c.op === 'between') { const [a, b] = c.value as unknown[]; return `(NOT ISBLANK(${L}) && ${d} >= ${num(a)} && ${d} <= ${num(b)})`; }
+      return `(NOT ISBLANK(${L}) && ${d} ${({ gt: '>', gte: '>=', lt: '<', lte: '<=' } as Record<string, string>)[c.op]} ${num(c.value)})`;
+    }
+    const ref = c.field === 'aov' ? `DIVIDE(${G}, ${C})` : m.fields[c.field];
     if (!ref) throw new Error(`Field ${c.field} is not mapped to the Power BI model`);
     const type = CATALOG[c.field].type;
     const v = c.value;

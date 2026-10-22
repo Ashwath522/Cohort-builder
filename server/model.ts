@@ -16,7 +16,18 @@ export interface CustomerRow {
 
 export type FieldKey =
   | 'registered_at' | 'first_purchase_date' | 'last_purchase_date'
-  | 'lifetime_order_count' | 'lifetime_gmv' | 'last_channel' | 'city' | 'categories';
+  | 'lifetime_order_count' | 'lifetime_gmv' | 'last_channel' | 'city' | 'categories'
+  | 'days_since_last_purchase' | 'aov' | 'customer_type';          // derived from the fields above
+
+/** Business rules applied after filtering, at approval: who actually gets the message. */
+export type SortKey = 'last_purchase_date' | 'first_purchase_date' | 'registered_at' | 'lifetime_gmv' | 'lifetime_order_count' | 'aov' | 'days_since_last_purchase';
+export interface Delivery {
+  sortBy: SortKey;
+  dir: 'asc' | 'desc';
+  limit?: number;          // send only the top N after sorting (Excel source)
+  holdoutPct: number;      // 0–50: random control group kept aside to measure lift
+  suppressDays: number;    // 0 = off; skip people pushed in another campaign in the last N days
+}
 
 /** Built-in filter, or a developer-defined ("custom") filter button. */
 export interface Condition {
@@ -94,7 +105,10 @@ export interface Cohort {
   approvedBy?: string;
   approvedAt?: string;
   rejectedReason?: string;
-  snapshotCount?: number;   // locked audience size
+  snapshotCount?: number;   // locked audience size (people who will be sent)
+  holdoutCount?: number;    // control group kept aside
+  delivery?: Delivery;
+  funnel?: Array<{ step: string; count: number; aside?: boolean }>;
   history: Array<{ at: string; by: string; action: string; note?: string }>;
 }
 
@@ -105,6 +119,8 @@ export interface Snapshot {
   dataAsOf?: string;
   createdAt: string;
   audience: Array<Pick<CustomerRow, 'customer_id' | 'email_hash' | 'email_enc'>>;
+  holdout?: Array<Pick<CustomerRow, 'customer_id' | 'email_hash'>>;   // not sent; for measuring lift
+  pushedAt?: string;
 }
 
 export interface Run {

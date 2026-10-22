@@ -13,7 +13,31 @@ export const CATALOG: Record<FieldKey, { label: string; type: FieldType }> = {
   last_channel:         { label: 'Last channel', type: 'choice' },
   city:                 { label: 'City', type: 'choice' },
   categories:           { label: 'Categories', type: 'categories' },
+  days_since_last_purchase: { label: 'Days since last purchase', type: 'number' },
+  aov:                  { label: 'Avg order value (₹)', type: 'number' },
+  customer_type:        { label: 'Customer type', type: 'choice' },
 };
+export const CUSTOMER_TYPES = ['Never bought', 'One-time', 'Repeat'];
+
+/** Derived fields exist when the fields they are computed from exist. */
+export function withDerived(fields: FieldKey[]): FieldKey[] {
+  const out = new Set(fields);
+  if (fields.includes('last_purchase_date')) out.add('days_since_last_purchase');
+  if (fields.includes('lifetime_gmv') && fields.includes('lifetime_order_count')) out.add('aov');
+  if (fields.includes('lifetime_order_count')) out.add('customer_type');
+  return [...out];
+}
+const DAY = 864e5;
+export const customerType = (n?: number) => (!n ? 'Never bought' : n === 1 ? 'One-time' : 'Repeat');
+/** A row's value for any field, derived ones included. `asOf` = the data's date (for "days since"). */
+export function fieldValue(row: CustomerRow, f: FieldKey, asOf: string): unknown {
+  switch (f) {
+    case 'days_since_last_purchase': return row.last_purchase_date ? Math.floor((Date.parse(asOf) - Date.parse(row.last_purchase_date)) / DAY) : undefined;
+    case 'aov': return row.lifetime_order_count ? (row.lifetime_gmv ?? 0) / row.lifetime_order_count : undefined;
+    case 'customer_type': return row.lifetime_order_count === undefined ? undefined : customerType(row.lifetime_order_count);
+    default: return (row as unknown as Record<string, unknown>)[f];
+  }
+}
 
 export const OPS: Record<FieldType, Record<string, string>> = {
   date: { between: 'is between', before: 'is before', on_or_after: 'is on or after', is_empty: 'is empty', not_empty: 'is not empty' },
@@ -97,20 +121,22 @@ export function customConditions(g: Group): Condition[] {
 /** Custom filter results, resolved before evaluation: condition → set of matching customer IDs. */
 export type CustomSets = Map<Condition, Set<string>>;
 
+export interface EvalCtx { sets?: CustomSets; asOf?: string }
+
 /** In-memory evaluation (Excel source). Blank dates/numbers never match, except "is empty". */
-export function matches(row: CustomerRow, g: Group, sets: CustomSets = new Map()): boolean {
-  const results = g.conditions.map(c => (isGroup(c) ? matches(row, c, sets) : matchCondition(row, c, sets)));
+export function matches(row: CustomerRow, g: Group, ctx: EvalCtx = {}): boolean {
+  const results = g.conditions.map(c => (isGroup(c) ? matches(row, c, ctx) : matchCondition(row, c, ctx)));
   return g.logic === 'AND' ? results.every(Boolean) : results.some(Boolean);
 }
 
-function matchCondition(row: CustomerRow, c: Condition, sets: CustomSets): boolean {
+function matchCondition(row: CustomerRow, c: Condition, { sets = new Map(), asOf = new Date().toISOString().slice(0, 10) }: EvalCtx): boolean {
   if (c.field === 'custom') {
     const set = sets.get(c);
     if (!set) throw new Error('Custom filter was not resolved');
     return c.op === 'exclude' ? !set.has(row.customer_id) : set.has(row.customer_id);
   }
   const type = CATALOG[c.field].type;
-  const raw = (row as unknown as Record<string, unknown>)[c.field];
+  const raw = fieldValue(row, c.field, asOf);
   if (type === 'date') {
     const d = raw as string | undefined;
     if (c.op === 'is_empty') return !d;
@@ -146,21 +172,38 @@ function matchCondition(row: CustomerRow, c: Condition, sets: CustomSets): boole
   return false;
 }
 
-/** Breakdowns for the preview screen. Counts only, no identities. */
-export function breakdowns(rows: CustomerRow[]) {
-  const tally = (key: (r: CustomerRow) => string | string[] | undefined) => {
-    const m = new Map<string, number>();
-    for (const r of rows) {
-      const k = key(r);
-      for (const x of Array.isArray(k) ? k : [k ?? '(blank)']) m.set(x, (m.get(x) ?? 0) + 1);
-    }
-    return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([label, count]) => ({ label, count }));
+/** Analytics for the preview screen: KPIs and chart data. Counts and sums only, never identities. */
+export function analytics(rows: CustomerRow[], total: number, asOf: string) {
+  const count = <K extends string>(order: K[], key: (r: CustomerRow) => K | undefined) => {
+    const m = new Map<string, number>(order.map(k => [k, 0]));
+    for (const r of rows) { const k = key(r); if (k !== undefined) m.set(k, (m.get(k) ?? 0) + 1); }
+    return order.map(label => ({ label, count: m.get(label) ?? 0 }));
   };
-  const band = (n?: number) => n === undefined ? '(blank)' : n === 0 ? '0 (never bought)' : n === 1 ? '1 (one-time)' : n <= 3 ? '2–3' : '4+';
+  const top = (key: (r: CustomerRow) => string[] | string | undefined, n: number) => {
+    const m = new Map<string, number>();
+    for (const r of rows) { const k = key(r); for (const x of Array.isArray(k) ? k : k ? [k] : []) m.set(x, (m.get(x) ?? 0) + 1); }
+    return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([label, count]) => ({ label, count }));
+  };
+  const days = (r: CustomerRow) => fieldValue(r, 'days_since_last_purchase', asOf) as number | undefined;
+  const buyers = rows.filter(r => (r.lifetime_order_count ?? 0) > 0);
+  const gmv = rows.reduce((s, r) => s + (r.lifetime_gmv ?? 0), 0);
+  const orders = rows.reduce((s, r) => s + (r.lifetime_order_count ?? 0), 0);
+  const dl = buyers.map(days).filter((d): d is number => d !== undefined).sort((a, b) => a - b);
+  const RECENCY = ['0–90 days', '91–180 days', '181–365 days', '1–2 years', '2+ years', 'Never bought'];
+  const SPEND = ['₹0', '< ₹10k', '₹10k–25k', '₹25k–50k', '₹50k–1L', '₹1L+'];
   return {
-    lastPurchaseYear: tally(r => r.last_purchase_date?.slice(0, 4) ?? '(never)'),
-    orderCount: tally(r => band(r.lifetime_order_count)),
-    lastChannel: tally(r => r.last_channel),
-    categories: tally(r => (r.categories?.length ? r.categories : ['(none)'])),
+    kpis: {
+      audience: rows.length, shareOfBase: total ? rows.length / total : 0,
+      lifetimeGmv: gmv, avgSpend: buyers.length ? gmv / buyers.length : 0,
+      avgOrders: buyers.length ? orders / buyers.length : 0,
+      medianDaysSinceLast: dl.length ? dl[Math.floor(dl.length / 2)] : null,
+      buyers: buyers.length,
+    },
+    customerType: count(CUSTOMER_TYPES, r => r.lifetime_order_count === undefined ? undefined : customerType(r.lifetime_order_count)),
+    channel: top(r => r.last_channel, 6),
+    recency: count(RECENCY, r => { const d = days(r); return d === undefined ? 'Never bought' : d <= 90 ? RECENCY[0] : d <= 180 ? RECENCY[1] : d <= 365 ? RECENCY[2] : d <= 730 ? RECENCY[3] : RECENCY[4]; }),
+    spend: count(SPEND, r => { const g = r.lifetime_gmv ?? 0; return g <= 0 ? SPEND[0] : g < 1e4 ? SPEND[1] : g < 25e3 ? SPEND[2] : g < 5e4 ? SPEND[3] : g < 1e5 ? SPEND[4] : SPEND[5]; }),
+    categories: top(r => r.categories, 10),
+    cities: top(r => r.city, 8),
   };
 }

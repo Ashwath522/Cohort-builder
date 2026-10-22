@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api, isGroup, post, type Catalog, type Condition, type DatasetMeta, type FieldKey, type FilterButton, type Freshness, type Group } from './api';
+import { api, isGroup, post, type Catalog, type Condition, type DatasetMeta, type Delivery, type FieldKey, type FilterButton, type Freshness, type Group, type SortKey } from './api';
+import { Columns, Donut, Funnel, HBars, inr, Kpi } from './Charts';
 import { describe } from './rules';
 
-interface Preview {
-  count: number; total: number | null; freshness: Freshness;
-  breakdowns: Record<string, Array<{ label: string; count: number }>> | null;
-  sample: Array<{ customer_id: string; email: string; last_purchase_date: string | null }>;
+type D = Array<{ label: string; count: number }>;
+interface Analytics {
+  kpis: { audience: number; shareOfBase: number; lifetimeGmv: number; avgSpend: number; avgOrders: number; medianDaysSinceLast: number | null; buyers: number };
+  customerType: D; channel: D; recency: D; spend: D; categories: D; cities: D;
 }
+interface Preview { count: number; total: number | null; freshness: Freshness; analytics: Analytics | null; funnel: Array<{ step: string; count: number; aside?: boolean }> | null }
+interface RowPage { total: number; page: number; pageSize: number; rows: Array<Record<string, unknown> & { customer_id: string; categories: string[] }> }
+const DEFAULT_DELIVERY: Delivery = { sortBy: 'lifetime_gmv', dir: 'desc', holdoutPct: 0, suppressDays: 0 };
+const DATE_SORTS: SortKey[] = ['last_purchase_date', 'first_purchase_date', 'registered_at'];
+const dirLabel = (k: SortKey, d: 'asc' | 'desc') => DATE_SORTS.includes(k) ? (d === 'desc' ? 'Newest first' : 'Oldest first') : (d === 'desc' ? 'Highest first' : 'Lowest first');
 export interface Choices { last_channel: string[]; city: string[]; categories: string[] }
 
 const defaultValue = (type: string, op: string): unknown =>
@@ -23,10 +29,15 @@ export default function Builder({ catalog, datasets, role, buttons, onSaved }:
   const [dax, setDax] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [delivery, setDelivery] = useState<Delivery>(DEFAULT_DELIVERY);
+  const [rows, setRows] = useState<RowPage | null>(null);
+  const [page, setPage] = useState(1);
   const [name, setName] = useState('Bought in 2025, not in 2026');
   const [segment, setSegment] = useState('lapsed_2025_not_2026');
   useEffect(() => { api<typeof pbi>('/sources/powerbi').then(setPbi).catch(() => {}); }, []);
-  useEffect(() => { setPreview(null); setDax(''); }, [rules, source, datasetId]);
+  useEffect(() => { setPreview(null); setRows(null); setDax(''); setPage(1); }, [rules, source, datasetId]);
+  // Delivery or sort changed after a preview → refresh the funnel and the table.
+  useEffect(() => { if (preview) refresh(page); /* eslint-disable-line */ }, [delivery, page, segment]);
 
   const ds = datasets.find(d => d.id === datasetId);
   const fields: FieldKey[] = source === 'excel' ? ds?.fieldsAvailable ?? [] : pbi?.fieldsAvailable ?? [];
@@ -41,9 +52,18 @@ export default function Builder({ catalog, datasets, role, buttons, onSaved }:
     setErr(''); setBusy(true);
     try { await fn(); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   }
-  const doPreview = () => run(async () => setPreview(await post<Preview>('/preview', { source, datasetId, rules })));
+  async function refresh(p: number) {
+    try {
+      setErr('');
+      const pv = await post<Preview>('/preview', { source, datasetId, rules, delivery, segmentName: segment });
+      setPreview(pv);
+      if (source === 'excel') setRows(await post<RowPage>('/preview/rows', { source, datasetId, rules, sortBy: delivery.sortBy, dir: delivery.dir, page: p, pageSize: 25 }));
+    } catch (e) { setErr((e as Error).message); }
+  }
+  const doPreview = () => run(async () => { setPage(1); await refresh(1); });
+  const sortBy = (k: SortKey) => { setPage(1); setDelivery({ ...delivery, sortBy: k, dir: delivery.sortBy === k && delivery.dir === 'desc' ? 'asc' : 'desc' }); };
   const doDax = () => run(async () => { const r = await post<{ count: string; fetch: string }>('/sources/powerbi/dax', { rules }); setDax(`-- count (preview)\n${r.count}\n\n-- fetch (at approval, paged)\n${r.fetch}`); });
-  const save = () => run(async () => { await post('/cohorts', { name, segmentName: segment, source, datasetId, rules }); onSaved(); });
+  const save = () => run(async () => { await post('/cohorts', { name, segmentName: segment, source, datasetId, rules, delivery }); onSaved(); });
   const addButton = (b: FilterButton) => setRules({ ...rules, conditions: [...rules.conditions,
     { field: 'custom', op: 'include', filterId: b.id, version: b.latestVersion ?? undefined, params: Object.fromEntries(b.params.map(p => [p.name, ''])) }] });
 
@@ -79,23 +99,12 @@ export default function Builder({ catalog, datasets, role, buttons, onSaved }:
         {dax && <pre className="dax">{dax}</pre>}
       </section>
 
+      {preview && <PreviewPanel preview={preview} source={source} catalog={catalog} delivery={delivery} setDelivery={setDelivery}
+        rows={rows} page={page} setPage={setPage} sortBy={sortBy} />}
+
       {preview && <section className="card">
-        <h2>Preview</h2>
-        <div className="big">{preview.count.toLocaleString()} <span className="muted">customers{preview.total !== null && ` of ${preview.total.toLocaleString()}`}</span></div>
-        <div className={`pill ${preview.freshness.level === 'ok' ? 'ok' : preview.freshness.level === 'warn' ? 'warn' : 'bad'}`}>
-          Data as of {preview.freshness.dataAsOf?.slice(0, 10) ?? 'unknown'}{preview.freshness.daysOld !== null && ` (${preview.freshness.daysOld} days old)`}
-        </div>
-        {preview.breakdowns && <div className="breakdowns">
-          {Object.entries({ lastPurchaseYear: 'Last purchase year', orderCount: 'Orders', lastChannel: 'Last channel', categories: 'Categories bought' }).map(([k, label]) =>
-            <Bars key={k} title={label} data={preview.breakdowns![k] ?? []} max={preview.count} />)}
-        </div>}
-        {preview.sample.length > 0 && <>
-          <h3>Sample (masked)</h3>
-          <table><thead><tr><th>Customer ID</th><th>Email</th><th>Last purchase</th></tr></thead><tbody>
-            {preview.sample.map(s => <tr key={s.customer_id}><td>{s.customer_id}</td><td>{s.email}</td><td>{s.last_purchase_date ?? '—'}</td></tr>)}
-          </tbody></table>
-        </>}
-        <h3>Save as cohort</h3>
+        <h2>Save as cohort</h2>
+        <p className="muted small">Saves the filters <b>and</b> the delivery rules above. Approval locks exactly who will be sent.</p>
         <div className="form">
           <label>Cohort name <input value={name} onChange={e => setName(e.target.value)} /></label>
           <label>CleverTap segment name <input value={segment} onChange={e => setSegment(e.target.value)} /></label>
@@ -107,9 +116,97 @@ export default function Builder({ catalog, datasets, role, buttons, onSaved }:
   );
 }
 
-function Bars({ title, data, max }: { title: string; data: Array<{ label: string; count: number }>; max: number }) {
-  return <div className="bars"><h4>{title}</h4>{data.map(d =>
-    <div key={d.label} className="bar"><span className="lbl">{d.label}</span><span className="track"><span style={{ width: `${(d.count / Math.max(max, 1)) * 100}%` }} /></span><span className="num">{d.count.toLocaleString()}</span></div>)}</div>;
+function PreviewPanel({ preview, source, catalog, delivery, setDelivery, rows, page, setPage, sortBy }: {
+  preview: Preview; source: string; catalog: Catalog; delivery: Delivery; setDelivery: (d: Delivery) => void;
+  rows: RowPage | null; page: number; setPage: (p: number) => void; sortBy: (k: SortKey) => void;
+}) {
+  const a = preview.analytics, k = a?.kpis;
+  const fr = preview.freshness;
+  const cols: Array<[string, string, SortKey | null]> = [
+    ['customer_id', 'Customer ID', null], ['email', 'Email (masked)', null], ['city', 'City', null], ['last_channel', 'Channel', null],
+    ['registered_at', 'Registered', 'registered_at'], ['last_purchase_date', 'Last purchase', 'last_purchase_date'],
+    ['days_since_last_purchase', 'Days since', 'days_since_last_purchase'], ['lifetime_order_count', 'Orders', 'lifetime_order_count'],
+    ['lifetime_gmv', 'Lifetime spend', 'lifetime_gmv'], ['aov', 'Avg order', 'aov'], ['categories', 'Categories', null],
+  ];
+  const fmt = (key: string, v: unknown) => v === null || v === undefined ? '—'
+    : key === 'lifetime_gmv' || key === 'aov' ? `₹${Math.round(Number(v)).toLocaleString('en-IN')}`
+    : Array.isArray(v) ? v.join(', ') : String(v);
+  return <>
+    <section className="card">
+      <div className="row space">
+        <h2>Audience</h2>
+        <span className={`pill ${fr.level === 'ok' ? 'ok' : fr.level === 'warn' ? 'warn' : 'bad'}`}>Data as of {fr.dataAsOf?.slice(0, 10) ?? 'unknown'}{fr.daysOld !== null && ` · ${fr.daysOld} days old`}</span>
+      </div>
+      {k ? <div className="kpis">
+        <Kpi hero label="Customers matched" value={k.audience.toLocaleString()} sub={`${(k.shareOfBase * 100).toFixed(1)}% of ${preview.total?.toLocaleString()} in the data`} />
+        <Kpi label="Lifetime spend" value={inr(k.lifetimeGmv)} sub="all orders, all time" />
+        <Kpi label="Avg spend per buyer" value={inr(k.avgSpend)} sub={`${k.buyers.toLocaleString()} buyers`} />
+        <Kpi label="Avg orders per buyer" value={k.avgOrders.toFixed(1)} />
+        <Kpi label="Median days since last order" value={k.medianDaysSinceLast === null ? '—' : String(k.medianDaysSinceLast)} sub="buyers only" />
+      </div> : <div className="kpis"><Kpi hero label="Customers matched" value={preview.count.toLocaleString()} sub="Power BI preview shows the count only" /></div>}
+      {a && <div className="charts">
+        <Donut title="Customer type" data={a.customerType} note="Repeat buyers usually respond best to new-collection offers; one-time buyers to a second-order nudge." />
+        <Donut title="Last channel" data={a.channel.slice(0, 3)} note={a.channel.length > 3 ? `Top 3 of ${a.channel.length} channels shown.` : undefined} />
+        <Columns title="Recency: time since last purchase" data={a.recency} note="Older buckets are win-back targets; 0–90 days are still warm." />
+        <Columns title="Lifetime spend band" data={a.spend} />
+        <HBars title="Top categories bought" data={a.categories} base={preview.count} note="A customer can appear in several categories." />
+        <HBars title="Top cities" data={a.cities} base={preview.count} />
+      </div>}
+    </section>
+
+    <section className="card">
+      <h2>Who gets it <span className="muted small">— business rules applied when the cohort is approved</span></h2>
+      <div className="form">
+        <label>Order customers by
+          <select value={delivery.sortBy} onChange={e => setDelivery({ ...delivery, sortBy: e.target.value as SortKey })}>
+            {Object.entries(catalog.sorts).map(([k2, v]) => <option key={k2} value={k2}>{v}</option>)}
+          </select>
+        </label>
+        <label>Direction
+          <select value={delivery.dir} onChange={e => setDelivery({ ...delivery, dir: e.target.value as 'asc' | 'desc' })}>
+            <option value="desc">{dirLabel(delivery.sortBy, 'desc')}</option><option value="asc">{dirLabel(delivery.sortBy, 'asc')}</option>
+          </select>
+        </label>
+        <label>Send to
+          <span className="inline">
+            <select value={delivery.limit ? 'top' : 'all'} disabled={source === 'powerbi'} onChange={e => setDelivery({ ...delivery, limit: e.target.value === 'top' ? Math.min(1000, preview.count) || 1 : undefined })}>
+              <option value="all">Everyone matched</option><option value="top">Only the top…</option>
+            </select>
+            {delivery.limit !== undefined && <input type="number" min={1} value={delivery.limit} onChange={e => setDelivery({ ...delivery, limit: Math.max(1, Number(e.target.value) || 1) })} style={{ width: 100 }} />}
+          </span>
+        </label>
+        <label>Control group (not sent)
+          <select value={delivery.holdoutPct} onChange={e => setDelivery({ ...delivery, holdoutPct: Number(e.target.value) })}>
+            {[0, 5, 10, 20].map(p => <option key={p} value={p}>{p === 0 ? 'None' : `${p}% — to measure lift`}</option>)}
+          </select>
+        </label>
+        <label>Skip people messaged in the last
+          <select value={delivery.suppressDays} onChange={e => setDelivery({ ...delivery, suppressDays: Number(e.target.value) })}>
+            {[0, 7, 14, 30, 60].map(d => <option key={d} value={d}>{d === 0 ? 'Off' : `${d} days`}</option>)}
+          </select>
+        </label>
+      </div>
+      {source === 'powerbi' && <p className="muted small">"Only the top…" needs the customer details, which Power BI doesn't send yet; control group and skip rules still apply.</p>}
+      {preview.funnel && <Funnel steps={preview.funnel} />}
+    </section>
+
+    {rows && <section className="card">
+      <div className="row space">
+        <h2>Customers <span className="muted small">— sorted by {catalog.sorts[delivery.sortBy].toLowerCase()}, {dirLabel(delivery.sortBy, delivery.dir).toLowerCase()} · this order decides "Only the top…"</span></h2>
+        <span className="muted small">{rows.total.toLocaleString()} rows</span>
+      </div>
+      <div className="table-scroll"><table className="results">
+        <thead><tr>{cols.map(([key, label, sk]) => <th key={key} className={sk ? 'sortable' : ''} onClick={() => sk && sortBy(sk)}>
+          {label}{sk && delivery.sortBy === sk && <span className="arrow">{delivery.dir === 'desc' ? ' ▼' : ' ▲'}</span>}</th>)}</tr></thead>
+        <tbody>{rows.rows.map(r => <tr key={r.customer_id}>{cols.map(([key]) => <td key={key} className={['lifetime_gmv', 'aov', 'lifetime_order_count', 'days_since_last_purchase'].includes(key) ? 'num' : key === 'categories' ? 'wrap' : ''}>{fmt(key, r[key])}</td>)}</tr>)}</tbody>
+      </table></div>
+      <div className="row">
+        <button disabled={page <= 1} onClick={() => setPage(page - 1)}>← Prev</button>
+        <span className="muted small">Page {rows.page} of {Math.max(1, Math.ceil(rows.total / rows.pageSize))}</span>
+        <button disabled={rows.page * rows.pageSize >= rows.total} onClick={() => setPage(page + 1)}>Next →</button>
+      </div>
+    </section>}
+  </>;
 }
 
 interface EditorProps { catalog: Catalog; fields: FieldKey[]; choices: Choices; buttons: FilterButton[] }
@@ -142,7 +239,8 @@ function GroupEditor({ g, onChange, depth, onRemove, ...p }: EditorProps & { g: 
 }
 
 const optionsFor = (type: string, choices: Choices) =>
-  type === 'category' || type === 'categories' ? choices.categories : type === 'channel' || type === 'last_channel' ? choices.last_channel : choices.city;
+  type === 'customer_type' ? ['Never bought', 'One-time', 'Repeat']
+    : type === 'category' || type === 'categories' ? choices.categories : type === 'channel' || type === 'last_channel' ? choices.last_channel : choices.city;
 
 function Chips({ options, value, onChange }: { options: string[]; value: string[]; onChange: (v: string[]) => void }) {
   return <div className="chips">
