@@ -1,15 +1,18 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { config, ctConfigured, pbiConfigured } from './config.js';
 import { keysReady } from './crypto.js';
-import { breakdowns, CATALOG, matches, OPS, RuleError, validateRules } from './filter.js';
-import type { Cohort, CustomerRow, FieldKey, Group, Run, Snapshot } from './model.js';
+import { breakdowns, CATALOG, customConditions, matches, OPS, RuleError, validateRules, type CustomSets, type RuleEnv } from './filter.js';
+import type { Cohort, CustomFilter, CustomerRow, Dataset, FilterDefinition, Group, Run, Snapshot } from './model.js';
 import { store } from './store.js';
 import { ingestExcel } from './sources/excel.js';
 import { loadMapping, mappedFields, buildDax } from './sources/dax.js';
 import { PBI_REQUIREMENTS, lastRefresh, pbiCount, pbiFetchProtected, testConnection } from './sources/powerbi.js';
 import { pushToCleverTap } from './clevertap.js';
+import { checkDefinition, filters, forgetDataset, PARAM_TYPES, placeholders, renderDax, runSql, SCHEMA, seedExamples, validateCustomCondition } from './customFilters.js';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -19,6 +22,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 60 
 const USERS = [
   { id: 'priya', name: 'Priya (Marketing)', role: 'creator' },
   { id: 'rahul', name: 'Rahul (Approver)', role: 'approver' },
+  { id: 'dev', name: 'Dev (Analytics)', role: 'developer' },
   { id: 'admin', name: 'Admin', role: 'admin' },
 ] as const;
 type User = (typeof USERS)[number];
@@ -33,12 +37,10 @@ const can = (u: User, ...roles: string[]) => {
 const h = (fn: (req: Request, res: Response) => Promise<unknown> | unknown) =>
   (req: Request, res: Response, next: NextFunction) => Promise.resolve(fn(req, res)).catch(next);
 const now = () => new Date().toISOString();
-const daysOld = (iso?: string) => (iso ? (Date.now() - Date.parse(iso)) / 864e5 : Infinity);
 const freshness = (iso?: string) => {
-  const d = daysOld(iso);
   if (!iso) return { dataAsOf: null, daysOld: null, level: 'warn' };      // unknown age: warn, don't block
-  return { dataAsOf: iso, daysOld: Math.floor(d),
-    level: d > config.staleBlockDays ? 'blocked' : d > config.staleWarnDays ? 'warn' : 'ok' };
+  const d = (Date.now() - Date.parse(iso)) / 864e5;
+  return { dataAsOf: iso, daysOld: Math.floor(d), level: d > config.staleBlockDays ? 'blocked' : d > config.staleWarnDays ? 'warn' : 'ok' };
 };
 const log = (msg: string) => console.log(`[${now()}] ${msg}`);   // counts only, never emails
 
@@ -51,7 +53,7 @@ app.get('/api/catalog', (_req, res) => res.json({ fields: CATALOG, ops: OPS }));
 
 // ── Data sources ──
 app.post('/api/sources/excel', upload.single('file'), h(async (req, res) => {
-  const u = userOf(req); can(u, 'creator');
+  const u = userOf(req); can(u, 'creator', 'developer');
   if (!req.file) return res.status(400).json({ error: 'Attach an .xlsx or .csv file' });
   const dataAsOf = String(req.body.dataAsOf ?? '');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dataAsOf)) return res.status(400).json({ error: 'Enter the date the Excel was exported' });
@@ -60,16 +62,18 @@ app.post('/api/sources/excel', upload.single('file'), h(async (req, res) => {
     const ds = await ingestExcel(req.file.buffer, req.file.originalname, u.id, dataAsOf);
     req.file.buffer.fill(0);                                     // wipe the original upload from memory
     store.saveDataset(ds);
-    log(`excel dataset ${ds.id}: ${ds.report.validRows}/${ds.report.totalRows} rows valid`);
-    const { rows, ...meta } = ds;
+    log(`excel dataset ${ds.id}: ${ds.report.validRows}/${ds.report.totalRows} rows valid, ${ds.orderLines?.length ?? 0} order lines`);
+    const { rows, orderLines, ...meta } = ds;
     res.json({ dataset: meta, freshness: freshness(dataAsOf) });
   } catch (e) {
-    const report = (e as { report?: unknown }).report;
-    res.status(400).json({ error: (e as Error).message, report });
+    res.status(400).json({ error: (e as Error).message, report: (e as { report?: unknown }).report });
   }
 }));
-app.get('/api/sources/excel', h((req, res) => { userOf(req); res.json(store.listDatasets().map(d => ({ ...d, freshness: freshness(d.dataAsOf) }))); }));
-app.delete('/api/sources/excel/:id', h((req, res) => { can(userOf(req), 'creator'); store.deleteDataset(req.params.id); res.json({ ok: true }); }));
+app.get('/api/sources/excel', h((req, res) => {
+  userOf(req);
+  res.json(store.listDatasets().map(d => ({ ...d, freshness: freshness(d.dataAsOf) })));
+}));
+app.delete('/api/sources/excel/:id', h((req, res) => { can(userOf(req), 'creator', 'developer'); store.deleteDataset(req.params.id); forgetDataset(req.params.id); res.json({ ok: true }); }));
 
 app.get('/api/sources/powerbi', h((req, res) => {
   userOf(req);
@@ -81,39 +85,126 @@ app.get('/api/sources/powerbi', h((req, res) => {
   });
 }));
 app.post('/api/sources/powerbi/test', h(async (req, res) => { userOf(req); res.json(await testConnection()); }));
-app.post('/api/sources/powerbi/dax', h((req, res) => {                // shows the generated DAX (count) for transparency
-  userOf(req); const rules = req.body.rules as Group;
-  validateRules(rules, mappedFields(loadMapping()));
-  res.json({ count: buildDax(rules, loadMapping(), 'count'), fetch: buildDax(rules, loadMapping(), 'fetch', { pageSize: config.pbi.pageSize }) });
-}));
 
-// ── Resolve a source: rows (Excel) or a Power BI query ──
-function excelDataset(id?: string) {
+// ── Source helpers ──
+function excelDataset(id?: string): Dataset {
   const ds = id ? store.getDataset(id) : undefined;
   if (!ds) throw Object.assign(new Error('Dataset not found (it may have expired). Upload the Excel again.'), { status: 404 });
   return ds;
 }
-function fieldsFor(source: string, datasetId?: string): FieldKey[] {
-  return source === 'powerbi' ? mappedFields(loadMapping()) : excelDataset(datasetId).fieldsAvailable;
+function envFor(source: 'excel' | 'powerbi', ds?: Dataset): RuleEnv {
+  return {
+    fieldsAvailable: source === 'powerbi' ? mappedFields(loadMapping()) : ds!.fieldsAvailable,
+    validateCustom: c => validateCustomCondition(c, source, ds),
+  };
 }
+/** Runs every custom filter in the rules against the uploaded data, once. */
+async function resolveCustom(rules: Group, ds: Dataset): Promise<CustomSets> {
+  const sets: CustomSets = new Map();
+  for (const c of customConditions(rules)) sets.set(c, (await runSql(ds, filters.version(c.filterId!, c.version)!, c.params ?? {})).ids);
+  return sets;
+}
+async function evaluateExcel(rules: Group, ds: Dataset): Promise<CustomerRow[]> {
+  const sets = await resolveCustom(rules, ds);
+  return ds.rows.filter(r => matches(r, rules, sets));
+}
+function prepare(body: { source: 'excel' | 'powerbi'; datasetId?: string; rules: Group }) {
+  if (body.source !== 'excel' && body.source !== 'powerbi') throw new RuleError('Pick a data source');
+  const ds = body.source === 'excel' ? excelDataset(body.datasetId) : undefined;
+  validateRules(body.rules, envFor(body.source, ds));
+  return ds;
+}
+
+app.post('/api/sources/powerbi/dax', h((req, res) => {          // the DAX the filters would send, for transparency
+  userOf(req);
+  const rules = req.body.rules as Group;
+  validateRules(rules, envFor('powerbi'));
+  res.json({ count: buildDax(rules, loadMapping(), 'count'), fetch: buildDax(rules, loadMapping(), 'fetch', { pageSize: config.pbi.pageSize }) });
+}));
 
 // ── Preview: counts and breakdowns only ──
 app.post('/api/preview', h(async (req, res) => {
   userOf(req);
-  const { source, datasetId, rules } = req.body as { source: 'excel' | 'powerbi'; datasetId?: string; rules: Group };
-  validateRules(rules, fieldsFor(source, datasetId));
+  const ds = prepare(req.body);
+  const { source, rules } = req.body as { source: 'excel' | 'powerbi'; rules: Group };
   if (source === 'powerbi') {
     if (!pbiConfigured()) return res.status(400).json({ error: 'Power BI is not configured yet. Use Excel upload for now.' });
     const [count, refreshed] = await Promise.all([pbiCount(rules), lastRefresh().catch(() => null)]);
     return res.json({ count, total: null, breakdowns: null, sample: [], freshness: freshness(refreshed ?? undefined) });
   }
-  const ds = excelDataset(datasetId);
-  const hit = ds.rows.filter(r => matches(r, rules));
+  const hit = await evaluateExcel(rules, ds!);
   res.json({
-    count: hit.length, total: ds.rows.length, breakdowns: breakdowns(hit),
+    count: hit.length, total: ds!.rows.length, breakdowns: breakdowns(hit),
     sample: hit.slice(0, 5).map(r => ({ customer_id: r.customer_id, email: r.email_masked, last_purchase_date: r.last_purchase_date ?? null })),
-    freshness: freshness(ds.dataAsOf),
+    freshness: freshness(ds!.dataAsOf),
   });
+}));
+
+// ── Developer: filter buttons (SQL / DAX) ──
+const publicFilter = (f: CustomFilter) => {
+  const latest = f.versions.at(-1);
+  return { id: f.id, status: f.status, latestVersion: latest?.version ?? null, label: latest?.label ?? f.draft.label,
+    description: latest?.description ?? f.draft.description, params: latest?.params ?? [],
+    worksOn: { excel: true, powerbi: Boolean(latest?.dax?.trim()) }, needsOrderLines: /\border_lines\b/i.test(latest?.sql ?? '') };
+};
+// Marketing: published buttons only, no query text.
+app.get('/api/filters', h((req, res) => { userOf(req); res.json(filters.all().filter(f => f.status === 'published').map(publicFilter)); }));
+
+// Developer: full definitions.
+app.get('/api/dev/filters', h((req, res) => { can(userOf(req), 'developer'); res.json({ filters: filters.all(), schema: SCHEMA, paramTypes: PARAM_TYPES }); }));
+
+const readDef = (b: Partial<FilterDefinition>): FilterDefinition => ({
+  label: String(b.label ?? '').trim(), description: String(b.description ?? '').trim().slice(0, 300),
+  params: (Array.isArray(b.params) ? b.params : []).map(p => ({ name: String(p.name ?? '').trim(), label: String(p.label ?? '').trim(), type: p.type })),
+  sql: String(b.sql ?? ''), dax: String(b.dax ?? ''),
+});
+
+app.post('/api/dev/filters', h((req, res) => {
+  const u = userOf(req); can(u, 'developer');
+  const def = readDef(req.body);
+  const errs = checkDefinition(def);
+  if (errs.length) return res.status(400).json({ error: errs.join('; '), errors: errs });
+  const f: CustomFilter = { id: `f_${crypto.randomUUID().slice(0, 8)}`, draft: def, versions: [], status: 'draft', createdBy: u.id, createdAt: now(), updatedAt: now() };
+  filters.save(f); res.json(f);
+}));
+app.put('/api/dev/filters/:id', h((req, res) => {
+  can(userOf(req), 'developer');
+  const f = filters.get(req.params.id); if (!f) return res.status(404).json({ error: 'Not found' });
+  const def = readDef(req.body);
+  const errs = checkDefinition(def);
+  if (errs.length) return res.status(400).json({ error: errs.join('; '), errors: errs });
+  f.draft = def; f.updatedAt = now(); filters.save(f); res.json(f);
+}));
+/** Test a draft on an uploaded dataset: count, sample (masked), time taken. Also shows the rendered DAX. */
+app.post('/api/dev/filters/test', h(async (req, res) => {
+  can(userOf(req), 'developer');
+  const def = readDef(req.body.definition ?? {});
+  const errs = checkDefinition(def);
+  if (errs.length) return res.status(400).json({ error: errs.join('; '), errors: errs });
+  const ds = excelDataset(req.body.datasetId);
+  const { ids, ms } = await runSql(ds, def, req.body.params ?? {});
+  const hit = ds.rows.filter(r => ids.has(r.customer_id));
+  res.json({
+    count: hit.length, total: ds.rows.length, ms, unknownIds: ids.size - hit.length,
+    sample: hit.slice(0, 5).map(r => ({ customer_id: r.customer_id, email: r.email_masked, last_purchase_date: r.last_purchase_date ?? null })),
+    dax: def.dax?.trim() ? renderDax(def, req.body.params ?? {}) : null, placeholders: placeholders(def.sql),
+  });
+}));
+app.post('/api/dev/filters/:id/publish', h((req, res) => {
+  const u = userOf(req); can(u, 'developer');
+  const f = filters.get(req.params.id); if (!f) return res.status(404).json({ error: 'Not found' });
+  const errs = checkDefinition(f.draft);
+  if (errs.length) return res.status(400).json({ error: errs.join('; ') });
+  const version = (f.versions.at(-1)?.version ?? 0) + 1;
+  f.versions.push({ ...f.draft, version, publishedBy: u.id, publishedAt: now() });
+  f.status = 'published'; f.updatedAt = now(); filters.save(f);
+  log(`filter ${f.id} "${f.draft.label}" published v${version} by ${u.id}`);
+  res.json(f);
+}));
+app.post('/api/dev/filters/:id/archive', h((req, res) => {
+  can(userOf(req), 'developer');
+  const f = filters.get(req.params.id); if (!f) return res.status(404).json({ error: 'Not found' });
+  f.status = f.status === 'archived' ? (f.versions.length ? 'published' : 'draft') : 'archived'; f.updatedAt = now(); filters.save(f); res.json(f);
 }));
 
 // ── Cohorts: draft → pending_approval → approved (snapshot locked) → pushed ──
@@ -126,13 +217,11 @@ app.post('/api/cohorts', h(async (req, res) => {
   if (!name || name.length > 120) return res.status(400).json({ error: 'Give the cohort a name' });
   if (!segmentName || !SEGMENT_RE.test(segmentName)) return res.status(400).json({ error: 'Segment name: 3–80 letters, numbers, _ or -' });
   if (store.cohorts().some(c => c.segmentName === segmentName)) return res.status(400).json({ error: 'That segment name is already used' });
-  if (source !== 'excel' && source !== 'powerbi') return res.status(400).json({ error: 'Pick a data source' });
-  validateRules(rules as Group, fieldsFor(source, datasetId));
-  const ds = source === 'excel' ? excelDataset(datasetId) : undefined;
+  const ds = prepare({ source: source as 'excel' | 'powerbi', datasetId, rules: rules as Group });
   const c: Cohort = {
     id: `c_${crypto.randomUUID().slice(0, 8)}`, name, segmentName, rules: rules as Group, rulesVersion: 1,
-    source, datasetId: ds?.id, dataAsOf: ds?.dataAsOf, status: 'draft', createdBy: u.id, createdAt: now(),
-    previewCount: ds ? ds.rows.filter(r => matches(r, rules as Group)).length : undefined,
+    source: source as 'excel' | 'powerbi', datasetId: ds?.id, dataAsOf: ds?.dataAsOf, status: 'draft', createdBy: u.id, createdAt: now(),
+    previewCount: ds ? (await evaluateExcel(rules as Group, ds)).length : undefined,
     history: [{ at: now(), by: u.id, action: 'created' }],
   };
   store.saveCohort(c);
@@ -149,7 +238,7 @@ app.post('/api/cohorts/:id/submit', h((req, res) => {
   const u = userOf(req); can(u, 'creator');
   const c = getCohort(req.params.id);
   if (!['draft', 'rejected'].includes(c.status)) return res.status(409).json({ error: `Cannot submit a cohort that is ${c.status}` });
-  c.status = 'pending_approval'; c.submittedAt = now(); c.history.push({ at: now(), by: u.id, action: 'submitted' });
+  c.status = 'pending_approval'; c.history.push({ at: now(), by: u.id, action: 'submitted' });
   store.saveCohort(c); res.json(c);
 }));
 
@@ -172,9 +261,11 @@ app.post('/api/cohorts/:id/approve', h(async (req, res) => {
   let audience: CustomerRow[]; let dataAsOf: string | undefined;
   if (c.source === 'excel') {
     const ds = excelDataset(c.datasetId);
+    validateRules(c.rules, envFor('excel', ds));
     dataAsOf = ds.dataAsOf;
-    audience = ds.rows.filter(r => matches(r, c.rules));
+    audience = await evaluateExcel(c.rules, ds);
   } else {
+    validateRules(c.rules, envFor('powerbi'));
     dataAsOf = (await lastRefresh().catch(() => null)) ?? undefined;
     const r = await pbiFetchProtected(c.rules);
     audience = r.rows;
@@ -225,6 +316,13 @@ app.post('/api/cohorts/:id/push', h(async (req, res) => {
 
 app.get('/api/runs', h((req, res) => { userOf(req); res.json(store.runs()); }));
 
+// ── Built web app (npm start). /developer and / both load the same page; the page picks the window. ──
+const dist = path.resolve('dist');
+if (fs.existsSync(path.join(dist, 'index.html'))) {
+  app.use(express.static(dist));
+  app.get(/^\/(?!api\/).*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')));
+}
+
 // ── Errors ──
 app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: NextFunction) => {
   const status = err instanceof RuleError ? 400 : err.status ?? 500;
@@ -233,6 +331,7 @@ app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: 
 });
 
 store.purgeExpired();
+seedExamples();
 setInterval(() => { const n = store.purgeExpired(); if (n) log(`retention: deleted ${n} expired datasets`); }, 3600_000).unref();
 
 if (!keysReady()) console.warn('⚠  Encryption keys missing. Run: npm run keys');

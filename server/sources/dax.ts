@@ -3,6 +3,7 @@ import path from 'node:path';
 import { CATALOG, nextDay } from '../filter.js';
 import type { Condition, FieldKey, Group } from '../model.js';
 import { isGroup } from '../model.js';
+import { filters, renderDax } from '../customFilters.js';
 
 export interface PbiMapping {
   customerTable: string;
@@ -31,6 +32,12 @@ const num = (v: unknown) => { const n = Number(v); if (!Number.isFinite(n)) thro
 export function buildDax(rules: Group, m: PbiMapping, mode: 'count' | 'fetch', opts: { afterId?: string | number; pageSize?: number } = {}) {
   const vars: string[] = [];
   const cond = (c: Condition): string => {
+    if (c.field === 'custom') {
+      const def = filters.version(c.filterId!, c.version);
+      if (!def?.dax) throw new Error('This filter button has no DAX for Power BI');
+      const inSet = `${m.customerId} IN (${renderDax(def, c.params ?? {})})`;
+      return c.op === 'exclude' ? `NOT (${inSet})` : `(${inSet})`;
+    }
     const ref = m.fields[c.field];
     if (!ref) throw new Error(`Field ${c.field} is not mapped to the Power BI model`);
     const type = CATALOG[c.field].type;
@@ -52,6 +59,12 @@ export function buildDax(rules: Group, m: PbiMapping, mode: 'count' | 'fetch', o
     if (type === 'choice') {
       const list = `{ ${(v as string[]).map(str).join(', ')} }`;
       return c.op === 'in' ? `${ref} IN ${list}` : `NOT (${ref} IN ${list})`;
+    }
+    if (type === 'categories' && c.op === 'bought_not') {
+      const { bought, notBought } = v as { bought: string[]; notBought: string[] };
+      const a = `Cats${vars.length + 1}`; vars.push(`    VAR ${a} = { ${bought.map(str).join(', ')} }`);
+      const b = `Cats${vars.length + 1}`; vars.push(`    VAR ${b} = { ${notBought.map(str).join(', ')} }`);
+      return `(COUNTROWS(INTERSECT(${a}, ${ref})) = ${bought.length} && ISEMPTY(INTERSECT(${b}, ${ref})))`;
     }
     if (type === 'categories') {
       const name = `Cats${vars.length + 1}`;

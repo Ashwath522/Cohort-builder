@@ -18,7 +18,34 @@ export type FieldKey =
   | 'registered_at' | 'first_purchase_date' | 'last_purchase_date'
   | 'lifetime_order_count' | 'lifetime_gmv' | 'last_channel' | 'city' | 'categories';
 
-export interface Condition { field: FieldKey; op: string; value?: unknown }
+/** Built-in filter, or a developer-defined ("custom") filter button. */
+export interface Condition {
+  field: FieldKey | 'custom';
+  op: string;                       // custom: 'include' | 'exclude'
+  value?: unknown;
+  filterId?: string;                // custom only
+  version?: number;                 // custom only: the published version the cohort was built with
+  params?: Record<string, unknown>; // custom only
+}
+
+export interface OrderLine { customer_id: string; order_date?: string; category?: string; amount?: number }
+
+export type ParamType = 'number' | 'date' | 'text' | 'category' | 'channel' | 'city';
+export interface FilterParam { name: string; label: string; type: ParamType }
+export interface FilterDefinition {
+  label: string;           // the button marketing sees, e.g. "Not bought"
+  description: string;
+  params: FilterParam[];
+  sql: string;             // runs on uploaded data (tables: customers, customer_categories, order_lines); returns customer_id
+  dax?: string;            // optional: DAX table expression of customer IDs, for the Power BI source
+}
+export interface CustomFilter {
+  id: string;
+  draft: FilterDefinition;
+  versions: Array<FilterDefinition & { version: number; publishedBy: string; publishedAt: string }>;
+  status: 'draft' | 'published' | 'archived';
+  createdBy: string; createdAt: string; updatedAt: string;
+}
 export interface Group { logic: 'AND' | 'OR'; conditions: Array<Condition | Group> }
 export const isGroup = (c: Condition | Group): c is Group => (c as Group).logic !== undefined;
 
@@ -30,6 +57,7 @@ export interface ValidationReport {
   errors: string[];                          // file-level problems (reject)
   warnings: string[];
   rowIssues: { missingId: number; invalidEmail: number; internalDomain: number; duplicateEmail: number; badDate: number; badNumber: number };
+  orderLines?: { sheet: string; rows: number; skipped: number };
 }
 
 export interface Dataset {
@@ -44,6 +72,7 @@ export interface Dataset {
   choices: { last_channel: string[]; city: string[]; categories: string[] };
   report: ValidationReport;
   rows: CustomerRow[];
+  orderLines?: OrderLine[];
 }
 
 export type CohortStatus = 'draft' | 'pending_approval' | 'approved' | 'rejected' | 'pushing' | 'pushed' | 'failed';

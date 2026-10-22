@@ -3,7 +3,7 @@ import { Readable } from 'node:stream';
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { encrypt, hashEmail, isValidEmail, maskEmail, normaliseEmail } from '../crypto.js';
-import type { CustomerRow, Dataset, FieldKey, ValidationReport } from '../model.js';
+import type { CustomerRow, Dataset, FieldKey, OrderLine, ValidationReport } from '../model.js';
 
 type InternalField = FieldKey | 'customer_id' | 'email' | 'phone';
 
@@ -82,7 +82,7 @@ export async function ingestExcel(buf: Buffer, fileName: string, uploadedBy: str
   } catch (e) {
     throw new Error(`Could not read the file: ${(e as Error).message}`);
   }
-  const ws = wb.worksheets.find(w => /customer/i.test(w.name)) ?? wb.worksheets[0];
+  const ws = wb.worksheets.find(w => /customer/i.test(w.name)) ?? wb.worksheets.find(w => !/order/i.test(w.name)) ?? wb.worksheets[0];
   if (!ws) throw new Error('The file has no sheets');
 
   // Header row = first row (within the first 10) whose cells match at least 2 known columns.
@@ -152,6 +152,44 @@ export async function ingestExcel(buf: Buffer, fileName: string, uploadedBy: str
     rows.push(out);
   }
   report.validRows = rows.length;
+
+  // Optional second sheet "Order Lines" (Customer ID, Order Date, Category, Amount): enables
+  // time-based category filters for developer-defined filter buttons.
+  let orderLines: OrderLine[] | undefined;
+  const os = wb.worksheets.find(w => w !== ws && /order/i.test(w.name));
+  if (os) {
+    const OL: Record<string, string[]> = {
+      customer_id: ALIASES.customer_id, order_date: ['order date', 'order_date', 'date', 'purchase date'],
+      category: ['category', 'product category'], amount: ['amount', 'line gmv', 'line_gmv', 'gmv', 'value', 'price'],
+    };
+    const cols: Record<string, number> = {};
+    os.getRow(1).eachCell((cell, col) => {
+      const h = norm(String(cellValue(cell.value) ?? ''));
+      for (const [k, list] of Object.entries(OL)) if (!(k in cols) && list.map(norm).includes(h)) cols[k] = col;
+    });
+    if (cols.customer_id && cols.category) {
+      const valid = new Set(rows.map(r => r.customer_id));
+      orderLines = []; let skipped = 0;
+      for (let r = 2; r <= os.rowCount; r++) {
+        const row = os.getRow(r); if (!row.hasValues) continue;
+        const id = String(cellValue(row.getCell(cols.customer_id).value) ?? '').trim();
+        if (!valid.has(id)) { skipped++; continue; }
+        const d = cols.order_date ? toIsoDate(cellValue(row.getCell(cols.order_date).value)) : undefined;
+        const amt = cols.amount ? toNumber(cellValue(row.getCell(cols.amount).value)) : undefined;
+        const cat = String(cellValue(row.getCell(cols.category).value) ?? '').trim();
+        orderLines.push({ customer_id: id, order_date: d ?? undefined, category: cat || undefined, amount: amt ?? undefined });
+        if (cat) choices.categories.add(cat);
+      }
+      report.orderLines = { sheet: os.name, rows: orderLines.length, skipped };
+      if (!report.columnsFound.categories) {          // derive "categories bought" from the order lines
+        const byId = new Map<string, Set<string>>();
+        for (const o of orderLines) if (o.category) (byId.get(o.customer_id) ?? byId.set(o.customer_id, new Set()).get(o.customer_id)!).add(o.category);
+        for (const r of rows) { const c = byId.get(r.customer_id); if (c) r.categories = [...c]; }
+        report.columnsFound.categories = `${os.name} → Category`;
+      }
+      if (skipped) report.warnings.push(`${skipped} order lines skipped: customer not in the customer sheet (or skipped there)`);
+    } else report.warnings.push(`Sheet "${os.name}" ignored: it needs Customer ID and Category columns`);
+  }
   if (rows.length === 0) report.errors.push('No usable rows after validation');
   if (report.errors.length) throw Object.assign(new Error('Validation failed'), { report });
 
@@ -174,6 +212,6 @@ export async function ingestExcel(buf: Buffer, fileName: string, uploadedBy: str
     expiresAt: new Date(+now + config.retentionDays * 864e5).toISOString(),
     fieldsAvailable,
     choices: { last_channel: [...choices.last_channel].sort(), city: [...choices.city].sort(), categories: [...choices.categories].sort() },
-    report, rows,
+    report, rows, orderLines,
   };
 }

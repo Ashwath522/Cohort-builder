@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api, isGroup, post, type Catalog, type Condition, type DatasetMeta, type FieldKey, type Freshness, type Group } from './api';
+import { api, isGroup, post, type Catalog, type Condition, type DatasetMeta, type FieldKey, type FilterButton, type Freshness, type Group } from './api';
 import { describe } from './rules';
 
 interface Preview {
@@ -7,13 +7,14 @@ interface Preview {
   breakdowns: Record<string, Array<{ label: string; count: number }>> | null;
   sample: Array<{ customer_id: string; email: string; last_purchase_date: string | null }>;
 }
-interface Choices { last_channel: string[]; city: string[]; categories: string[] }
+export interface Choices { last_channel: string[]; city: string[]; categories: string[] }
 
 const defaultValue = (type: string, op: string): unknown =>
-  type === 'date' ? (op === 'between' ? ['', ''] : '') : type === 'number' ? (op === 'between' ? ['', ''] : '') : [];
+  op === 'bought_not' ? { bought: [], notBought: [] } : (type === 'date' || type === 'number') ? (op === 'between' ? ['', ''] : '') : [];
 const PILOT: Group = { logic: 'AND', conditions: [{ field: 'last_purchase_date', op: 'between', value: ['2025-01-01', '2025-12-31'] }] };
 
-export default function Builder({ catalog, datasets, role, onSaved }: { catalog: Catalog; datasets: DatasetMeta[]; role?: string; onSaved: () => void }) {
+export default function Builder({ catalog, datasets, role, buttons, onSaved }:
+  { catalog: Catalog; datasets: DatasetMeta[]; role?: string; buttons: FilterButton[]; onSaved: () => void }) {
   const [source, setSource] = useState<'excel' | 'powerbi'>('excel');
   const [datasetId, setDatasetId] = useState(datasets[0]?.id ?? '');
   const [pbi, setPbi] = useState<{ configured: boolean; fieldsAvailable: FieldKey[]; choices: Choices } | null>(null);
@@ -32,6 +33,9 @@ export default function Builder({ catalog, datasets, role, onSaved }: { catalog:
   const choices: Choices = source === 'excel' ? ds?.choices ?? { last_channel: [], city: [], categories: [] } : pbi?.choices ?? { last_channel: [], city: [], categories: [] };
   const sourceReady = source === 'excel' ? Boolean(ds) : Boolean(pbi?.configured);
   const canSave = role === 'creator' || role === 'admin';
+  const buttonProblem = (b: FilterButton) =>
+    source === 'powerbi' && !b.worksOn.powerbi ? 'Excel only for now (no DAX yet)'
+      : source === 'excel' && b.needsOrderLines && !ds?.hasOrderLines ? 'Needs an "Order Lines" sheet in the upload' : '';
 
   async function run(fn: () => Promise<void>) {
     setErr(''); setBusy(true);
@@ -40,6 +44,8 @@ export default function Builder({ catalog, datasets, role, onSaved }: { catalog:
   const doPreview = () => run(async () => setPreview(await post<Preview>('/preview', { source, datasetId, rules })));
   const doDax = () => run(async () => { const r = await post<{ count: string; fetch: string }>('/sources/powerbi/dax', { rules }); setDax(`-- count (preview)\n${r.count}\n\n-- fetch (at approval, paged)\n${r.fetch}`); });
   const save = () => run(async () => { await post('/cohorts', { name, segmentName: segment, source, datasetId, rules }); onSaved(); });
+  const addButton = (b: FilterButton) => setRules({ ...rules, conditions: [...rules.conditions,
+    { field: 'custom', op: 'include', filterId: b.id, version: b.latestVersion ?? undefined, params: Object.fromEntries(b.params.map(p => [p.name, ''])) }] });
 
   return (
     <div className="stack">
@@ -58,8 +64,12 @@ export default function Builder({ catalog, datasets, role, onSaved }: { catalog:
 
       <section className="card">
         <h2>Filters</h2>
-        <GroupEditor g={rules} onChange={setRules} catalog={catalog} fields={fields} choices={choices} depth={0} />
-        <p className="muted small summary">{describe(rules, catalog)}</p>
+        {buttons.length > 0 && <div className="buttonbar">
+          <span className="muted small">Filter buttons:</span>
+          {buttons.map(b => <button key={b.id} className="fbtn" disabled={!!buttonProblem(b)} title={buttonProblem(b) || b.description} onClick={() => addButton(b)}>+ {b.label}</button>)}
+        </div>}
+        <GroupEditor g={rules} onChange={setRules} catalog={catalog} fields={fields} choices={choices} buttons={buttons} depth={0} />
+        <p className="muted small summary">{describe(rules, catalog, buttons)}</p>
         <div className="row">
           <button className="primary" disabled={!sourceReady || busy} onClick={doPreview}>{busy ? 'Working…' : 'Preview count'}</button>
           <button disabled={busy} onClick={doDax} title="The DAX the app would send to Power BI for these filters">Show Power BI DAX</button>
@@ -102,12 +112,13 @@ function Bars({ title, data, max }: { title: string; data: Array<{ label: string
     <div key={d.label} className="bar"><span className="lbl">{d.label}</span><span className="track"><span style={{ width: `${(d.count / Math.max(max, 1)) * 100}%` }} /></span><span className="num">{d.count.toLocaleString()}</span></div>)}</div>;
 }
 
-function GroupEditor({ g, onChange, catalog, fields, choices, depth, onRemove }:
-  { g: Group; onChange: (g: Group) => void; catalog: Catalog; fields: FieldKey[]; choices: Choices; depth: number; onRemove?: () => void }) {
-  const firstField = fields[0] ?? 'last_purchase_date';
+interface EditorProps { catalog: Catalog; fields: FieldKey[]; choices: Choices; buttons: FilterButton[] }
+
+function GroupEditor({ g, onChange, depth, onRemove, ...p }: EditorProps & { g: Group; onChange: (g: Group) => void; depth: number; onRemove?: () => void }) {
+  const firstField = p.fields[0] ?? 'last_purchase_date';
   const update = (i: number, c: Condition | Group) => onChange({ ...g, conditions: g.conditions.map((x, j) => (j === i ? c : x)) });
   const remove = (i: number) => onChange({ ...g, conditions: g.conditions.filter((_, j) => j !== i) });
-  const newCond = (): Condition => { const t = catalog.fields[firstField].type; const op = Object.keys(catalog.ops[t])[0]; return { field: firstField, op, value: defaultValue(t, op) }; };
+  const newCond = (): Condition => { const t = p.catalog.fields[firstField].type; const op = Object.keys(p.catalog.ops[t])[0]; return { field: firstField, op, value: defaultValue(t, op) }; };
   return (
     <div className={`group depth${depth}`}>
       <div className="group-head">
@@ -118,8 +129,10 @@ function GroupEditor({ g, onChange, catalog, fields, choices, depth, onRemove }:
         {onRemove && <button className="link" onClick={onRemove}>Remove group</button>}
       </div>
       {g.conditions.map((c, i) => isGroup(c)
-        ? <GroupEditor key={i} g={c} onChange={x => update(i, x)} catalog={catalog} fields={fields} choices={choices} depth={depth + 1} onRemove={() => remove(i)} />
-        : <ConditionRow key={i} c={c} onChange={x => update(i, x)} onRemove={() => remove(i)} catalog={catalog} fields={fields} choices={choices} />)}
+        ? <GroupEditor key={i} g={c} onChange={x => update(i, x)} depth={depth + 1} onRemove={() => remove(i)} {...p} />
+        : c.field === 'custom'
+          ? <CustomRow key={i} c={c} onChange={x => update(i, x)} onRemove={() => remove(i)} {...p} />
+          : <ConditionRow key={i} c={c} onChange={x => update(i, x)} onRemove={() => remove(i)} {...p} />)}
       <div className="row">
         <button onClick={() => onChange({ ...g, conditions: [...g.conditions, newCond()] })}>+ Condition</button>
         {depth < 2 && <button onClick={() => onChange({ ...g, conditions: [...g.conditions, { logic: g.logic === 'AND' ? 'OR' : 'AND', conditions: [newCond()] }] })}>+ Group</button>}
@@ -128,16 +141,54 @@ function GroupEditor({ g, onChange, catalog, fields, choices, depth, onRemove }:
   );
 }
 
-function ConditionRow({ c, onChange, onRemove, catalog, fields, choices }:
-  { c: Condition; onChange: (c: Condition) => void; onRemove: () => void; catalog: Catalog; fields: FieldKey[]; choices: Choices }) {
-  const meta = catalog.fields[c.field];
+const optionsFor = (type: string, choices: Choices) =>
+  type === 'category' || type === 'categories' ? choices.categories : type === 'channel' || type === 'last_channel' ? choices.last_channel : choices.city;
+
+function Chips({ options, value, onChange }: { options: string[]; value: string[]; onChange: (v: string[]) => void }) {
+  return <div className="chips">
+    {options.length === 0 && <span className="muted small">no values in source</span>}
+    {options.map(o => <label key={o} className={`chip ${value.includes(o) ? 'on' : ''}`}>
+      <input type="checkbox" checked={value.includes(o)} onChange={e => onChange(e.target.checked ? [...value, o] : value.filter(x => x !== o))} />{o}
+    </label>)}
+  </div>;
+}
+
+/** A developer-made filter button: marketing only picks include/exclude and fills its parameters. */
+function CustomRow({ c, onChange, onRemove, buttons, choices }: EditorProps & { c: Condition; onChange: (c: Condition) => void; onRemove: () => void }) {
+  const b = buttons.find(x => x.id === c.filterId);
+  if (!b) return <div className="cond"><span className="bad-text">This filter button was removed.</span><button className="link" onClick={onRemove}>✕</button></div>;
+  const set = (k: string, v: unknown) => onChange({ ...c, params: { ...c.params, [k]: v } });
+  return (
+    <div className="cond custom">
+      <span className="fbadge" title={b.description}>{b.label}</span>
+      <select value={c.op} onChange={e => onChange({ ...c, op: e.target.value })}>
+        <option value="include">include these customers</option><option value="exclude">exclude these customers</option>
+      </select>
+      {b.params.map(p => <label key={p.name} className="param">{p.label}
+        {p.type === 'date' ? <input type="date" value={String(c.params?.[p.name] ?? '')} onChange={e => set(p.name, e.target.value)} />
+          : p.type === 'number' ? <input type="number" value={String(c.params?.[p.name] ?? '')} onChange={e => set(p.name, e.target.value)} />
+          : p.type === 'text' ? <input value={String(c.params?.[p.name] ?? '')} onChange={e => set(p.name, e.target.value)} />
+          : <select value={String(c.params?.[p.name] ?? '')} onChange={e => set(p.name, e.target.value)}>
+              <option value="">choose…</option>{optionsFor(p.type, choices).map(o => <option key={o}>{o}</option>)}
+            </select>}
+      </label>)}
+      {b.latestVersion !== c.version && <span className="pill warn" title="The developer published a newer version">v{c.version} (newer: v{b.latestVersion})</span>}
+      <button className="link" onClick={onRemove} title="Remove">✕</button>
+    </div>
+  );
+}
+
+function ConditionRow({ c, onChange, onRemove, catalog, fields, choices }: EditorProps & { c: Condition; onChange: (c: Condition) => void; onRemove: () => void }) {
+  const field = c.field as FieldKey;
+  const meta = catalog.fields[field];
   const ops = catalog.ops[meta.type];
-  const unavailable = !fields.includes(c.field);
-  const options = useMemo(() => c.field === 'categories' ? choices.categories : c.field === 'last_channel' ? choices.last_channel : choices.city, [c.field, choices]);
+  const unavailable = !fields.includes(field);
+  const options = useMemo(() => optionsFor(field, choices), [field, choices]);
   const arr = Array.isArray(c.value) ? (c.value as string[]) : [];
+  const bn = (c.value ?? { bought: [], notBought: [] }) as { bought: string[]; notBought: string[] };
   return (
     <div className={`cond ${unavailable ? 'unavailable' : ''}`}>
-      <select value={c.field} onChange={e => { const f = e.target.value as FieldKey; const t = catalog.fields[f].type; const op = Object.keys(catalog.ops[t])[0]; onChange({ field: f, op, value: defaultValue(t, op) }); }}>
+      <select value={field} onChange={e => { const f = e.target.value as FieldKey; const t = catalog.fields[f].type; const op = Object.keys(catalog.ops[t])[0]; onChange({ field: f, op, value: defaultValue(t, op) }); }}>
         {(Object.keys(catalog.fields) as FieldKey[]).map(f => <option key={f} value={f} disabled={!fields.includes(f)}>{catalog.fields[f].label}{!fields.includes(f) ? ' (not in source)' : ''}</option>)}
       </select>
       <select value={c.op} onChange={e => onChange({ ...c, op: e.target.value, value: defaultValue(meta.type, e.target.value) })}>
@@ -153,11 +204,11 @@ function ConditionRow({ c, onChange, onRemove, catalog, fields, choices }:
         <input type="number" value={arr[1] ?? ''} onChange={e => onChange({ ...c, value: [arr[0] ?? '', e.target.value] })} />
       </>}
       {meta.type === 'number' && c.op !== 'between' && <input type="number" value={String(c.value ?? '')} onChange={e => onChange({ ...c, value: e.target.value })} />}
-      {(meta.type === 'choice' || meta.type === 'categories') && <div className="chips">
-        {options.length === 0 && <span className="muted small">no values in source</span>}
-        {options.map(o => <label key={o} className={`chip ${arr.includes(o) ? 'on' : ''}`}>
-          <input type="checkbox" checked={arr.includes(o)} onChange={e => onChange({ ...c, value: e.target.checked ? [...arr, o] : arr.filter(x => x !== o) })} />{o}
-        </label>)}
+      {meta.type === 'choice' && <Chips options={options} value={arr} onChange={v => onChange({ ...c, value: v })} />}
+      {meta.type === 'categories' && c.op !== 'bought_not' && <Chips options={options} value={arr} onChange={v => onChange({ ...c, value: v })} />}
+      {c.op === 'bought_not' && <div className="boughtnot">
+        <div><span className="ok-text strong">Bought</span><Chips options={options.filter(o => !bn.notBought.includes(o))} value={bn.bought} onChange={v => onChange({ ...c, value: { ...bn, bought: v } })} /></div>
+        <div><span className="bad-text strong">NOT bought</span><Chips options={options.filter(o => !bn.bought.includes(o))} value={bn.notBought} onChange={v => onChange({ ...c, value: { ...bn, notBought: v } })} /></div>
       </div>}
       <button className="link" onClick={onRemove} title="Remove condition">✕</button>
     </div>

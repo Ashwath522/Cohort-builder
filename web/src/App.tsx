@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, setUser, type Catalog, type DatasetMeta } from './api';
+import { api, setUser, type Catalog, type DatasetMeta, type FilterButton } from './api';
 import DataSource from './DataSource';
 import Builder from './Builder';
 import Cohorts from './Cohorts';
@@ -14,6 +14,7 @@ export default function App() {
   const [user, setU] = useState('priya');
   const [tab, setTab] = useState<(typeof TABS)[number]>(TABS[0]);
   const [datasets, setDatasets] = useState<DatasetMeta[]>([]);
+  const [buttons, setButtons] = useState<FilterButton[]>([]);
   const [error, setError] = useState('');
 
   const loadDatasets = useCallback(() => api<DatasetMeta[]>('/sources/excel').then(setDatasets).catch(e => setError(e.message)), []);
@@ -22,6 +23,7 @@ export default function App() {
     api<Catalog>('/catalog').then(setCatalog);
     loadDatasets();
   }, [loadDatasets]);
+  useEffect(() => { api<FilterButton[]>('/filters').then(setButtons).catch(() => {}); }, [tab, user]);   // new buttons appear without reload
 
   const me = health?.users.find(u => u.id === user);
   return (
@@ -39,7 +41,7 @@ export default function App() {
           </>}
           <label className="acting">Acting as
             <select value={user} onChange={e => { setU(e.target.value); setUser(e.target.value); }}>
-              {health?.users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+              {health?.users.filter(u => u.role !== 'developer').map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
             </select>
           </label>
         </div>
@@ -48,8 +50,8 @@ export default function App() {
       {error && <div className="alert bad">{error}</div>}
       <main key={user}>
         {tab === TABS[0] && <DataSource datasets={datasets} reload={loadDatasets} role={me?.role} />}
-        {tab === TABS[1] && catalog && <Builder catalog={catalog} datasets={datasets} role={me?.role} onSaved={() => setTab(TABS[2])} />}
-        {tab === TABS[2] && catalog && <Cohorts catalog={catalog} userId={user} role={me?.role} />}
+        {tab === TABS[1] && catalog && <Builder catalog={catalog} datasets={datasets} role={me?.role} buttons={buttons} onSaved={() => setTab(TABS[2])} />}
+        {tab === TABS[2] && catalog && <Cohorts catalog={catalog} userId={user} role={me?.role} buttons={buttons} />}
         {tab === TABS[3] && <Runs />}
       </main>
       <footer>Emails are encrypted (AES-256-GCM) the moment data arrives; only the push step decrypts them, in memory. Phone numbers are never read.</footer>

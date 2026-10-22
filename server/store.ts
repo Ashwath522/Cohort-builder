@@ -21,10 +21,10 @@ export const store = {
   saveDataset: (d: Dataset) => writeJson(dir('datasets', `${d.id}.json`), d),
   getDataset: (id: string): Dataset | undefined =>
     /^[\w-]+$/.test(id) ? readJson<Dataset | undefined>(dir('datasets', `${id}.json`), undefined) : undefined,
-  listDatasets: (): Omit<Dataset, 'rows'>[] =>
+  listDatasets: (): Array<Omit<Dataset, 'rows' | 'orderLines'> & { hasOrderLines: boolean }> =>
     fs.readdirSync(dir('datasets')).filter(f => f.endsWith('.json')).map(f => {
-      const { rows, ...meta } = readJson<Dataset>(dir('datasets', f), {} as Dataset);
-      return meta;
+      const { rows, orderLines, ...meta } = readJson<Dataset>(dir('datasets', f), {} as Dataset);
+      return { ...meta, hasOrderLines: Boolean(orderLines?.length) };
     }).sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt)),
   deleteDataset: (id: string) => { if (/^[\w-]+$/.test(id)) fs.rmSync(dir('datasets', `${id}.json`), { force: true }); },
 

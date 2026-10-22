@@ -17,7 +17,16 @@ npm run setup        # installs packages, creates .env with encryption keys, wri
 npm run dev          # API on :4000 + web app on http://localhost:5173
 ```
 
-Open http://localhost:5173, then:
+There are two windows in the same app, with no tab or link between them:
+
+| Window | Address | Who |
+|---|---|---|
+| **Marketing** | http://localhost:5173/ | Builds cohorts by clicking filters and buttons, previews, submits, approves, pushes |
+| **Developer** | http://localhost:5173/**developer** | Writes SQL (and optionally DAX), names the button, tests it, publishes it to marketing |
+
+(With `npm start` everything is served from http://localhost:4000, and `/developer` works the same way.)
+
+In the marketing window:
 
 1. **Data source.** Upload `sample/sample_customers.xlsx` (3,000 fake customers). The validation report shows what was skipped and why.
 2. **Build cohort.** Use the pilot filter (last purchase in 2025, so nothing in 2026), add more filters, then **Preview count**. **Show Power BI DAX** shows the query the same filters would send to Power BI.
@@ -28,6 +37,44 @@ Open http://localhost:5173, then:
 Without CleverTap settings the push is a **dry run**: the CSV is built and measured, and nothing is sent.
 
 Offline checks: `npm test`
+
+## Developer window: make a new filter button
+
+1. Open `/developer` (acting as *Dev (Analytics)*) and click **+ New filter button**.
+2. **Button name:** what marketing will see, e.g. `Not bought`.
+3. **Parameters:** what marketing fills in, e.g. `category` (type *category*). Use them in the query as `:category`.
+4. **SQL:** a read-only `SELECT` that returns a `customer_id` column. Tables:
+   - `customers`: customer_id, registered_at, first_purchase_date, last_purchase_date, lifetime_order_count, lifetime_gmv, last_channel, city
+   - `customer_categories`: customer_id, category
+   - `order_lines`: customer_id, order_date, category, amount. This one is filled only when the upload has an **Order Lines** sheet.
+
+   There are no email or phone columns, so queries choose *who*, never contact details.
+   ```sql
+   SELECT customer_id FROM customers
+   EXCEPT
+   SELECT customer_id FROM customer_categories WHERE category = :category
+   ```
+5. **DAX** (optional): the same logic for the Power BI source, as a table of customer IDs. Without it, the button works on Excel uploads only.
+6. **Run test** on an uploaded file to get the count, masked sample and run time. Then **Save draft** and **Publish to marketing**.
+
+The button now appears in the marketing window's filter bar (**+ Not bought**). Marketing clicks it, picks the category, and chooses *include* or *exclude*. Each publish creates a new version. Saved cohorts keep the version they were built with, so changing a query never silently changes an existing cohort. **Archive** hides a button.
+
+Three example buttons are created on first run: *Bought X, not Y* · *Not bought since* · *Bought category in year* (needs order lines).
+
+Guards on developer queries:
+- one statement only, `SELECT` / `WITH` only;
+- every `:param` must be declared;
+- values are bound as parameters, never pasted into the SQL;
+- only Developer / Admin users can see or change queries.
+
+## "Bought Bed but NOT Mattress"
+
+Two ways to do it:
+
+- **Built-in:** add a condition **Categories → bought … but NOT …**, tick *Bed* under **Bought** and *Mattress* under **NOT bought**.
+- **Button:** click **+ Bought X, not Y** and pick Bed / Mattress.
+
+Both give the same result; `npm test` checks this. For time windows such as "bought Bed in 2024", upload a file with an **Order Lines** sheet (Customer ID, Order Date, Category, Amount) and use *Bought category in year*, or write your own button.
 
 ## See a full push with a fake CleverTap
 
@@ -92,6 +139,7 @@ Set `CT_ACCOUNT_ID`, `CT_PASSCODE`, `CT_REGION` (India = `in1`) and `CT_ADMIN_EM
 - **Users** come from a demo switcher. Replace it with company SSO (Entra ID / Google).
 - **Storage** is JSON files in `data/`. Move it to MySQL/Postgres.
 - **Keys** are in `.env`. Move them to KMS / Secrets Manager.
+- **Developer queries** run inside the API process with no time limit. Before real use, move them to a worker thread with a timeout.
 - **Scheduled refresh** of approved cohorts isn't built yet. The `ul-scheduler-service` repo is the natural home for it.
 
 ## Project layout
@@ -102,10 +150,10 @@ server/            Express API (TypeScript)
   sources/dax.ts     filter rules → DAX (count + paged fetch)
   sources/powerbi.ts Entra token, executeQueries, refresh time
   filter.ts          filter catalog, rule validation, in-memory engine
+  customFilters.ts   developer filter buttons: storage, SQL guard + engine (sql.js), DAX rendering, versions
   clevertap.ts       3-step Custom List upload (or dry run)
   mock-clevertap.ts  local fake CleverTap
-web/src/           React screens
+web/src/           React screens (App = marketing, DevApp = /developer)
 config/powerbi-mapping.json   app filters → your model's names
 tools/powerbi-mock/           fake Power BI (Python) for testing
 ```
-# Cohort-builder

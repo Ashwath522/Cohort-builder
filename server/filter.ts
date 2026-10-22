@@ -3,7 +3,7 @@ import { isGroup } from './model.js';
 
 export type FieldType = 'date' | 'number' | 'choice' | 'categories';
 
-/** Filter Catalog: the ONLY fields and operators the app accepts, for every source. */
+/** Filter Catalog: the built-in fields and operators the app accepts, for every source. */
 export const CATALOG: Record<FieldKey, { label: string; type: FieldType }> = {
   last_purchase_date:   { label: 'Last purchase date', type: 'date' },
   first_purchase_date:  { label: 'First purchase date', type: 'date' },
@@ -12,37 +12,51 @@ export const CATALOG: Record<FieldKey, { label: string; type: FieldType }> = {
   lifetime_gmv:         { label: 'Lifetime spend (₹)', type: 'number' },
   last_channel:         { label: 'Last channel', type: 'choice' },
   city:                 { label: 'City', type: 'choice' },
-  categories:           { label: 'Categories bought', type: 'categories' },
+  categories:           { label: 'Categories', type: 'categories' },
 };
 
 export const OPS: Record<FieldType, Record<string, string>> = {
   date: { between: 'is between', before: 'is before', on_or_after: 'is on or after', is_empty: 'is empty', not_empty: 'is not empty' },
   number: { gt: '>', gte: '≥', lt: '<', lte: '≤', between: 'is between' },
   choice: { in: 'is any of', not_in: 'is none of' },
-  categories: { all_of: 'includes ALL of', any_of: 'includes ANY of', none_of: 'includes NONE of' },
+  categories: { bought_not: 'bought … but NOT …', all_of: 'bought ALL of', any_of: 'bought ANY of', none_of: 'bought NONE of' },
 };
 
 export class RuleError extends Error {}
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
-const SAFE_TEXT = /^[\p{L}\p{N} &\-\/.,()'_+]{1,60}$/u;   // allowed characters in a choice / category value
+export const SAFE_TEXT = /^[\p{L}\p{N} &\-\/.,()'_+]{1,60}$/u;   // allowed characters in a choice / category / text value
+
+/** What validation needs to know about the source and the custom filters. */
+export interface RuleEnv {
+  fieldsAvailable: FieldKey[];
+  validateCustom: (c: Condition) => void;     // throws RuleError
+}
 
 /** Validates the rules tree. Throws RuleError with a message the user can act on. */
-export function validateRules(g: Group, fieldsAvailable: FieldKey[], depth = 0, count = { n: 0 }): void {
+export function validateRules(g: Group, env: RuleEnv, depth = 0, count = { n: 0 }): void {
   if (depth > 2) throw new RuleError('Groups can be nested at most 2 levels deep');
   if (!g || !['AND', 'OR'].includes(g.logic) || !Array.isArray(g.conditions)) throw new RuleError('Invalid group');
   if (g.conditions.length === 0) throw new RuleError('A group needs at least one condition');
   for (const c of g.conditions) {
-    if (isGroup(c)) { validateRules(c, fieldsAvailable, depth + 1, count); continue; }
+    if (isGroup(c)) { validateRules(c, env, depth + 1, count); continue; }
     if (++count.n > 40) throw new RuleError('Too many conditions (max 40)');
-    validateCondition(c, fieldsAvailable);
+    if (c.field === 'custom') env.validateCustom(c);
+    else validateCondition(c, env.fieldsAvailable);
   }
 }
 
+const textList = (label: string, v: unknown, allowEmpty = false) => {
+  if (!Array.isArray(v) || (!allowEmpty && v.length === 0)) throw new RuleError(`${label}: pick at least one value`);
+  if (v.length > 50) throw new RuleError(`${label}: too many values`);
+  for (const x of v) if (typeof x !== 'string' || !SAFE_TEXT.test(x)) throw new RuleError(`${label}: invalid value "${String(x).slice(0, 40)}"`);
+  return v as string[];
+};
+
 function validateCondition(c: Condition, fieldsAvailable: FieldKey[]) {
-  const meta = CATALOG[c.field];
+  const meta = CATALOG[c.field as FieldKey];
   if (!meta) throw new RuleError(`Unknown filter "${String(c.field)}"`);
-  if (!fieldsAvailable.includes(c.field)) throw new RuleError(`"${meta.label}" is not available in this data source`);
+  if (!fieldsAvailable.includes(c.field as FieldKey)) throw new RuleError(`"${meta.label}" is not available in this data source`);
   if (!OPS[meta.type][c.op]) throw new RuleError(`Operator "${c.op}" is not allowed for "${meta.label}"`);
   const v = c.value;
   switch (meta.type) {
@@ -59,23 +73,42 @@ function validateCondition(c: Condition, fieldsAvailable: FieldKey[]) {
         if (!Array.isArray(v) || v.length !== 2 || !v.every(x => Number.isFinite(Number(x)) && x !== '')) throw new RuleError(`${meta.label}: enter both numbers`);
       } else if (!Number.isFinite(Number(v)) || v === '' || v === null) throw new RuleError(`${meta.label}: enter a number`);
       break;
-    case 'choice': case 'categories':
-      if (!Array.isArray(v) || v.length === 0) throw new RuleError(`${meta.label}: pick at least one value`);
-      if (v.length > 50) throw new RuleError(`${meta.label}: too many values`);
-      for (const x of v) if (typeof x !== 'string' || !SAFE_TEXT.test(x)) throw new RuleError(`${meta.label}: invalid value "${String(x).slice(0, 40)}"`);
+    case 'choice':
+      textList(meta.label, v);
+      break;
+    case 'categories':
+      if (c.op === 'bought_not') {
+        const o = (v ?? {}) as { bought?: unknown; notBought?: unknown };
+        const b = textList(`${meta.label} (bought)`, o.bought);
+        const n = textList(`${meta.label} (not bought)`, o.notBought);
+        if (b.some(x => n.includes(x))) throw new RuleError(`${meta.label}: a category can't be both bought and not bought`);
+      } else textList(meta.label, v);
   }
 }
 
 const addDays = (iso: string, n: number) => new Date(Date.parse(iso) + n * 864e5).toISOString().slice(0, 10);
 export const nextDay = (iso: string) => addDays(iso, 1);
 
+/** All custom-filter conditions in a rules tree. */
+export function customConditions(g: Group): Condition[] {
+  return g.conditions.flatMap(c => (isGroup(c) ? customConditions(c) : c.field === 'custom' ? [c] : []));
+}
+
+/** Custom filter results, resolved before evaluation: condition → set of matching customer IDs. */
+export type CustomSets = Map<Condition, Set<string>>;
+
 /** In-memory evaluation (Excel source). Blank dates/numbers never match, except "is empty". */
-export function matches(row: CustomerRow, g: Group): boolean {
-  const results = g.conditions.map(c => (isGroup(c) ? matches(row, c) : matchCondition(row, c)));
+export function matches(row: CustomerRow, g: Group, sets: CustomSets = new Map()): boolean {
+  const results = g.conditions.map(c => (isGroup(c) ? matches(row, c, sets) : matchCondition(row, c, sets)));
   return g.logic === 'AND' ? results.every(Boolean) : results.some(Boolean);
 }
 
-function matchCondition(row: CustomerRow, c: Condition): boolean {
+function matchCondition(row: CustomerRow, c: Condition, sets: CustomSets): boolean {
+  if (c.field === 'custom') {
+    const set = sets.get(c);
+    if (!set) throw new Error('Custom filter was not resolved');
+    return c.op === 'exclude' ? !set.has(row.customer_id) : set.has(row.customer_id);
+  }
   const type = CATALOG[c.field].type;
   const raw = (row as unknown as Record<string, unknown>)[c.field];
   if (type === 'date') {
@@ -101,6 +134,10 @@ function matchCondition(row: CustomerRow, c: Condition): boolean {
   }
   if (type === 'categories') {
     const mine = new Set((row.categories ?? []).map(s => s.toLowerCase()));
+    if (c.op === 'bought_not') {
+      const { bought, notBought } = c.value as { bought: string[]; notBought: string[] };
+      return bought.every(b => mine.has(b.toLowerCase())) && notBought.every(n => !mine.has(n.toLowerCase()));
+    }
     const want = (c.value as string[]).map(s => s.toLowerCase());
     if (c.op === 'all_of') return want.every(w => mine.has(w));
     if (c.op === 'any_of') return want.some(w => mine.has(w));

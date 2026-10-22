@@ -19,6 +19,7 @@ async function main() {
   ws.addRow(['Customer ID', 'Email', 'Phone', 'Registered At', 'First Purchase Date', 'Last Purchase Date',
              'Total Purchase Count', 'Lifetime GMV', 'Last Channel', 'City', 'Categories Bought']);
   const N = 3000;
+  const lines: Array<[number, string, string, number]> = [];     // customer, order date, category, amount
   for (let i = 1; i <= N; i++) {
     const id = 5200000 + i;
     let email = `customer${i}@example.com`;
@@ -28,16 +29,23 @@ async function main() {
     const reg = START + rnd() * (END - START);
     const orders = pick([0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 3, 5]);
     const dates = Array.from({ length: orders }, () => reg + rnd() * (END - reg)).sort((a, b) => a - b);
-    const cats = [...new Set(Array.from({ length: orders * 2 }, () => pick(CATS)))];
+    let gmv = 0; const cats = new Set<string>();
+    for (const d of dates) for (let k = 0, n = 1 + Math.floor(rnd() * 2); k < n; k++) {
+      const cat = pick(CATS), amt = Math.round(3000 + rnd() * 45000);
+      gmv += amt; cats.add(cat); lines.push([id, fmt(d), cat, amt]);
+    }
     ws.addRow([
       id, email, `9${String(Math.floor(rnd() * 1e9)).padStart(9, '0')}`, fmt(reg),
-      orders ? fmt(dates[0]) : null, orders ? fmt(dates[orders - 1]) : null, orders,
-      orders ? Math.round(orders * (5000 + rnd() * 60000)) : 0,
+      orders ? fmt(dates[0]) : null, orders ? fmt(dates[orders - 1]) : null, orders, gmv,
       orders ? pick(['Online', 'Store', 'App']) : null,
       pick(['Bangalore', 'Mumbai', 'Delhi', 'Hyderabad', 'Pune', 'Chennai']),
-      cats.join('; '),
+      [...cats].join('; '),
     ]);
   }
+  const ol = wb.addWorksheet('Order Lines');
+  ol.addRow(['Customer ID', 'Order Date', 'Category', 'Amount']);
+  for (const l of lines) ol.addRow(l);
+  ol.getRow(1).font = { bold: true };
   ws.getRow(1).font = { bold: true };
   await wb.xlsx.writeFile('sample/sample_customers.xlsx');
 
@@ -46,6 +54,6 @@ async function main() {
   bs.addRow(['Customer ID', 'Name', 'Last Purchase Date']);
   bs.addRow([1, 'Test', '01/01/2025']);
   await bad.xlsx.writeFile('sample/sample_missing_email.xlsx');
-  console.log(`Wrote sample/sample_customers.xlsx (${N} fake customers) and sample/sample_missing_email.xlsx`);
+  console.log(`Wrote sample/sample_customers.xlsx (${N} fake customers + order lines) and sample/sample_missing_email.xlsx`);
 }
 main();

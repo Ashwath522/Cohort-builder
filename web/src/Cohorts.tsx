@@ -1,10 +1,10 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import { api, post, type Catalog, type Cohort, type Run } from './api';
+import { api, post, type Catalog, type Cohort, type FilterButton, type Run } from './api';
 import { describe } from './rules';
 
 const STATUS_CLASS: Record<string, string> = { draft: 'muted', pending_approval: 'warn', approved: 'ok', rejected: 'bad', pushing: 'warn', pushed: 'ok', failed: 'bad' };
 
-export default function Cohorts({ catalog, userId, role }: { catalog: Catalog; userId: string; role?: string }) {
+export default function Cohorts({ catalog, userId, role, buttons }: { catalog: Catalog; userId: string; role?: string; buttons: FilterButton[] }) {
   const [list, setList] = useState<Cohort[]>([]);
   const [open, setOpen] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -53,7 +53,7 @@ export default function Cohorts({ catalog, userId, role }: { catalog: Catalog; u
               </div></td>
             </tr>
             {open === c.id && <tr className="details"><td colSpan={6}>
-              <div><b>Rules (v{c.rulesVersion}):</b> {describe(c.rules, catalog)}</div>
+              <div><b>Rules (v{c.rulesVersion}):</b> {describe(c.rules, catalog, buttons)}</div>
               {c.rejectedReason && <div className="bad-text">Rejected: {c.rejectedReason}</div>}
               <ul className="history">{c.history.map((h, i) => <li key={i}>{h.at.replace('T', ' ').slice(0, 19)} · <b>{h.by}</b> {h.action}{h.note && ` — ${h.note}`}</li>)}</ul>
             </td></tr>}

@@ -48,3 +48,21 @@ tr.details td { background:#fafbfc; }
 .history { margin:6px 0; padding-left:18px; font-size:12px; }
 footer { color:var(--muted); font-size:12px; margin:24px 0 8px; text-align:center; }
 code { background:#f1f3f6; padding:1px 4px; border-radius:4px; font-size:12px; }
+/* filter buttons (marketing) */
+.buttonbar { display:flex; gap:6px; align-items:center; flex-wrap:wrap; padding:8px 10px; background:#f4f6ff; border:1px dashed #c5cff5; border-radius:8px; margin-bottom:8px; }
+.fbtn { border-color:#c5cff5; color:var(--accent); background:#fff; border-radius:999px; font-size:13px; }
+.fbadge { background:#eef2ff; color:var(--accent); border:1px solid #c5cff5; border-radius:6px; padding:3px 8px; font-weight:600; font-size:13px; }
+.cond.custom { background:#fafbff; padding:8px; border-radius:6px; }
+.param { display:flex; gap:4px; align-items:center; font-size:12px; color:var(--muted); }
+.boughtnot { display:flex; flex-direction:column; gap:4px; } .boughtnot > div { display:flex; gap:8px; align-items:center; }
+.boughtnot > div > span { width:84px; font-size:12px; } .ok-text { color:var(--ok); }
+/* developer window */
+.devgrid { display:grid; grid-template-columns:260px 1fr; gap:16px; align-items:start; } @media (max-width:900px){ .devgrid{grid-template-columns:1fr;} }
+.flist { list-style:none; padding:0; margin:12px 0 0; } .flist li { padding:8px; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; gap:6px; align-items:center; }
+.flist li:hover { background:#f4f6ff; } .flist li.active { background:#eef2ff; }
+.wide { width:100%; } .grow { flex:1; min-width:260px; } .grow input { width:100%; }
+textarea.code { width:100%; font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; padding:10px; border:1px solid var(--line); border-radius:6px; background:#0f172a; color:#e2e8f0; resize:vertical; }
+.sqlgrid { display:grid; grid-template-columns:1fr 280px; gap:16px; } @media (max-width:900px){ .sqlgrid{grid-template-columns:1fr;} }
+.schema { background:#f6f7f9; border-radius:8px; padding:4px 12px 12px; } .schema > div { margin:6px 0; } .schema pre { white-space:pre-wrap; background:#fff; padding:8px; border-radius:6px; }
+table.params input, table.params select { width:100%; }
+.boughtnot { flex:1; min-width:380px; }

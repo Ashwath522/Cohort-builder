@@ -4,3 +4,4 @@ data/
 .env
 tools/powerbi-mock/model.db
 tools/powerbi-mock/__pycache__/
+.DS_Store

@@ -1,6 +1,12 @@
 export type FieldKey = 'registered_at' | 'first_purchase_date' | 'last_purchase_date' | 'lifetime_order_count' | 'lifetime_gmv' | 'last_channel' | 'city' | 'categories';
 export type FieldType = 'date' | 'number' | 'choice' | 'categories';
-export interface Condition { field: FieldKey; op: string; value?: unknown }
+export interface Condition { field: FieldKey | 'custom'; op: string; value?: unknown; filterId?: string; version?: number; params?: Record<string, unknown> }
+export type ParamType = 'number' | 'date' | 'text' | 'category' | 'channel' | 'city';
+export interface FilterParam { name: string; label: string; type: ParamType }
+/** A developer-made filter button, as marketing sees it (no query text). */
+export interface FilterButton { id: string; status: string; latestVersion: number | null; label: string; description: string; params: FilterParam[]; worksOn: { excel: boolean; powerbi: boolean }; needsOrderLines: boolean }
+export interface FilterDefinition { label: string; description: string; params: FilterParam[]; sql: string; dax?: string }
+export interface CustomFilter { id: string; draft: FilterDefinition; versions: Array<FilterDefinition & { version: number; publishedBy: string; publishedAt: string }>; status: 'draft' | 'published' | 'archived'; createdBy: string; updatedAt: string }
 export interface Group { logic: 'AND' | 'OR'; conditions: Array<Condition | Group> }
 export const isGroup = (c: Condition | Group): c is Group => (c as Group).logic !== undefined;
 
@@ -8,7 +14,7 @@ export interface Catalog { fields: Record<FieldKey, { label: string; type: Field
 export interface Freshness { dataAsOf: string | null; daysOld: number | null; level: 'ok' | 'warn' | 'blocked' }
 export interface DatasetMeta {
   id: string; fileName?: string; uploadedBy: string; uploadedAt: string; dataAsOf: string; expiresAt: string;
-  fieldsAvailable: FieldKey[]; choices: { last_channel: string[]; city: string[]; categories: string[] };
+  hasOrderLines?: boolean; fieldsAvailable: FieldKey[]; choices: { last_channel: string[]; city: string[]; categories: string[] };
   report: { totalRows: number; validRows: number; columnsFound: Record<string, string>; ignoredColumns: string[]; warnings: string[]; errors: string[] };
   freshness?: Freshness;
 }
@@ -24,7 +30,7 @@ export interface Run {
   steps: Array<{ at: string; step: string; ok: boolean; detail?: string }>;
 }
 
-let currentUser = 'priya';
+let currentUser = location.pathname.startsWith('/developer') ? 'dev' : 'priya';
 export const setUser = (u: string) => { currentUser = u; };
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
