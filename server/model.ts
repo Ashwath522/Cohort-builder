@@ -27,6 +27,7 @@ export interface Delivery {
   limit?: number;          // send only the top N after sorting (Excel source)
   holdoutPct: number;      // 0–50: random control group kept aside to measure lift
   suppressDays: number;    // 0 = off; skip people pushed in another campaign in the last N days
+  seed?: string;           // picks the control group; fixed when the audience is first built, so preview = approval
 }
 
 /** Built-in filter, or a developer-defined ("custom") filter button. */

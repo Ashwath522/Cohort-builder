@@ -1,6 +1,6 @@
 export type FieldKey = 'registered_at' | 'first_purchase_date' | 'last_purchase_date' | 'lifetime_order_count' | 'lifetime_gmv' | 'last_channel' | 'city' | 'categories' | 'days_since_last_purchase' | 'aov' | 'customer_type';
 export type SortKey = 'last_purchase_date' | 'first_purchase_date' | 'registered_at' | 'lifetime_gmv' | 'lifetime_order_count' | 'aov' | 'days_since_last_purchase';
-export interface Delivery { sortBy: SortKey; dir: 'asc' | 'desc'; limit?: number; holdoutPct: number; suppressDays: number }
+export interface Delivery { sortBy: SortKey; dir: 'asc' | 'desc'; limit?: number; holdoutPct: number; suppressDays: number; seed?: string }
 export type FieldType = 'date' | 'number' | 'choice' | 'categories';
 export interface Condition { field: FieldKey | 'custom'; op: string; value?: unknown; filterId?: string; version?: number; params?: Record<string, unknown> }
 export type ParamType = 'number' | 'date' | 'text' | 'category' | 'channel' | 'city';

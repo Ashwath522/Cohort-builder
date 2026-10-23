@@ -59,9 +59,9 @@ export default function DevApp() {
   const setParam = (i: number, p: Partial<FilterParam>) => setDef({ ...def, params: def.params.map((x, j) => (j === i ? { ...x, ...p } : x)) });
 
   return (
-    <div className="app">
-      <header>
-        <div><h1>Cohort Builder · Developer</h1><span className="sub">Write a query, name the button, publish. Marketing just clicks it.</span></div>
+    <div className="dev-shell"><div className="page wide">
+      <header className="dev-header">
+        <div><h1><span className="logo sm">CB</span> Developer window</h1><span className="sub">Write a query, name the button, publish. Marketing just clicks it.</span></div>
         <div className="header-right">
           <a href="/" className="small">Open marketing window ↗</a>
           <label className="acting">Acting as
@@ -75,7 +75,7 @@ export default function DevApp() {
         <div className="devgrid">
           <aside className="card">
             <h2>Filter buttons</h2>
-            <button className="primary wide" onClick={() => open(null)}>+ New filter button</button>
+            <button className="btn primary wide" onClick={() => open(null)}>+ New filter button</button>
             <ul className="flist">
               {data.filters.map(f => <li key={f.id} className={f.id === selected ? 'active' : ''} onClick={() => open(f)}>
                 <b>{f.draft.label}</b>
@@ -128,8 +128,8 @@ WHERE category = :category
               </div>
 
               <div className="row">
-                <button className="primary" disabled={busy || !dirty} onClick={save}>Save draft</button>
-                <button className="primary" disabled={busy || dirty || !selected} title={dirty ? 'Save first' : ''} onClick={publish}>Publish to marketing</button>
+                <button className="btn primary" disabled={busy || !dirty} onClick={save}>Save draft</button>
+                <button className="btn primary" disabled={busy || dirty || !selected} title={dirty ? 'Save first' : ''} onClick={publish}>Publish to marketing</button>
                 {current && <button disabled={busy} onClick={archive}>{current.status === 'archived' ? 'Restore' : 'Archive'}</button>}
               </div>
               {msg && <div className={`alert ${msg.ok ? 'ok' : 'bad'}`}>{msg.text}</div>}
@@ -149,7 +149,7 @@ WHERE category = :category
                     : ['category', 'channel', 'city'].includes(p.type) ? <select value={testParams[p.name] ?? ''} onChange={e => setTestParams({ ...testParams, [p.name]: e.target.value })}><option value="">choose…</option>{choicesFor(p.type).map(o => <option key={o}>{o}</option>)}</select>
                     : <input type={p.type === 'number' ? 'number' : 'text'} value={testParams[p.name] ?? ''} onChange={e => setTestParams({ ...testParams, [p.name]: e.target.value })} />}
                 </label>)}
-                <button className="primary" disabled={busy || !datasetId} onClick={runTest}>Run test</button>
+                <button className="btn primary" disabled={busy || !datasetId} onClick={runTest}>Run test</button>
               </div>
               {test && <>
                 <div className="big">{test.count.toLocaleString()} <span className="muted">of {test.total.toLocaleString()} customers · {test.ms} ms</span></div>
@@ -169,6 +169,6 @@ WHERE category = :category
           </section>
         </div>
       )}
-    </div>
+    </div></div>
   );
 }

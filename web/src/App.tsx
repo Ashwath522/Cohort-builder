@@ -1,60 +1,91 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, setUser, type Catalog, type DatasetMeta, type FilterButton } from './api';
-import DataSource from './DataSource';
-import Builder from './Builder';
+import { api, setUser, type Catalog, type Cohort, type DatasetMeta, type FilterButton } from './api';
+import Builder, { type Preset } from './Builder';
 import Cohorts from './Cohorts';
+import DataSource from './DataSource';
+import Home from './Home';
 import Runs from './Runs';
+import { Avatar, Icon, ToastProvider } from './ui';
 
 interface Health { keysReady: boolean; clevertap: string; ctBaseUrl: string; powerbi: string; users: Array<{ id: string; name: string; role: string }> }
-const TABS = ['1. Data source', '2. Build cohort', '3. Cohorts & approval', '4. Push history'] as const;
+const ROUTES = [
+  { id: 'home', label: 'Home', icon: 'home' },
+  { id: 'build', label: 'Build audience', icon: 'filter' },
+  { id: 'cohorts', label: 'Audiences', icon: 'users' },
+  { id: 'history', label: 'Send history', icon: 'clock' },
+  { id: 'data', label: 'Data sources', icon: 'data' },
+] as const;
+type Route = (typeof ROUTES)[number]['id'];
+const routeFromHash = (): Route => (ROUTES.find(r => `#/${r.id}` === location.hash)?.id ?? 'home');
 
-export default function App() {
+export default function App() { return <ToastProvider><Shell /></ToastProvider>; }
+
+function Shell() {
   const [health, setHealth] = useState<Health | null>(null);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [user, setU] = useState('priya');
-  const [tab, setTab] = useState<(typeof TABS)[number]>(TABS[0]);
+  const [route, setRoute] = useState<Route>(routeFromHash());
   const [datasets, setDatasets] = useState<DatasetMeta[]>([]);
   const [buttons, setButtons] = useState<FilterButton[]>([]);
-  const [error, setError] = useState('');
+  const [pending, setPending] = useState(0);
+  const [preset, setPreset] = useState<Preset | null>(null);
+  const [openCohort, setOpenCohort] = useState<string | null>(null);
+  const [down, setDown] = useState(false);
 
-  const loadDatasets = useCallback(() => api<DatasetMeta[]>('/sources/excel').then(setDatasets).catch(e => setError(e.message)), []);
+  const go = useCallback((r: string) => { location.hash = `#/${r}`; }, []);
+  useEffect(() => { const h = () => setRoute(routeFromHash()); window.addEventListener('hashchange', h); return () => window.removeEventListener('hashchange', h); }, []);
+  const loadDatasets = useCallback(() => api<DatasetMeta[]>('/sources/excel').then(setDatasets).catch(() => {}), []);
+  const loadPending = useCallback(() => api<Cohort[]>('/cohorts').then(l => setPending(l.filter(c => c.status === 'pending_approval').length)).catch(() => {}), []);
   useEffect(() => {
-    api<Health>('/health').then(setHealth).catch(() => setError('Cannot reach the API. Is `npm run dev` running?'));
-    api<Catalog>('/catalog').then(setCatalog);
-    loadDatasets();
-  }, [loadDatasets]);
-  useEffect(() => { api<FilterButton[]>('/filters').then(setButtons).catch(() => {}); }, [tab, user]);   // new buttons appear without reload
+    api<Health>('/health').then(h => { setHealth(h); setDown(false); }).catch(() => setDown(true));
+    api<Catalog>('/catalog').then(setCatalog).catch(() => {});
+    loadDatasets(); loadPending();
+  }, [loadDatasets, loadPending]);
+  useEffect(() => { api<FilterButton[]>('/filters').then(setButtons).catch(() => {}); loadPending(); if (route !== 'cohorts') setOpenCohort(null); }, [route, user, loadPending]);
 
-  const me = health?.users.find(u => u.id === user);
+  const users = health?.users.filter(u => u.role !== 'developer') ?? [];
+  const me = users.find(u => u.id === user);
+  const roleLabel = me?.role === 'creator' ? 'Marketing · creator' : me?.role === 'approver' ? 'Approver' : me?.role === 'admin' ? 'Admin' : '';
+
   return (
-    <div className="app">
-      <header>
-        <div>
-          <h1>Cohort Builder</h1>
-          <span className="sub">Historical purchase segments → CleverTap, without raw lists</span>
+    <div className="shell">
+      <aside className="sidebar">
+        <div className="brand"><span className="logo">CB</span><div><b>Cohort Builder</b><span>Purchase-history segments</span></div></div>
+        <nav>{ROUTES.map(r => <a key={r.id} href={`#/${r.id}`} className={route === r.id ? 'active' : ''}>
+          <Icon name={r.icon} /><span>{r.label}</span>{r.id === 'cohorts' && pending > 0 && <span className="nav-count">{pending}</span>}
+        </a>)}</nav>
+        <div className="sidebar-foot">
+          {health && <div className="sys">
+            <div><span className={`led ${health.clevertap === 'live' ? 'on' : 'warn'}`} />CleverTap: {health.clevertap === 'live' ? 'connected' : 'dry run'}</div>
+            <div><span className={`led ${health.powerbi === 'configured' ? 'on' : 'off'}`} />Power BI: {health.powerbi === 'configured' ? 'connected' : 'not set up'}</div>
+            {!health.keysReady && <div className="bad-text"><span className="led bad" />Keys missing: npm run keys</div>}
+          </div>}
+          <div className="muted tiny"><Icon name="shield" size={13} /> Emails encrypted · phones never read</div>
         </div>
-        <div className="header-right">
-          {health && <>
-            <span className={`pill ${health.clevertap === 'live' ? 'ok' : 'warn'}`} title={health.ctBaseUrl}>CleverTap: {health.clevertap}</span>
-            <span className={`pill ${health.powerbi === 'configured' ? 'ok' : 'muted'}`}>Power BI: {health.powerbi}</span>
-            {!health.keysReady && <span className="pill bad">Keys missing: run npm run keys</span>}
-          </>}
-          <label className="acting">Acting as
-            <select value={user} onChange={e => { setU(e.target.value); setUser(e.target.value); }}>
-              {health?.users.filter(u => u.role !== 'developer').map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-            </select>
-          </label>
-        </div>
-      </header>
-      <nav>{TABS.map(t => <button key={t} className={t === tab ? 'active' : ''} onClick={() => setTab(t)}>{t}</button>)}</nav>
-      {error && <div className="alert bad">{error}</div>}
-      <main key={user}>
-        {tab === TABS[0] && <DataSource datasets={datasets} reload={loadDatasets} role={me?.role} />}
-        {tab === TABS[1] && catalog && <Builder catalog={catalog} datasets={datasets} role={me?.role} buttons={buttons} onSaved={() => setTab(TABS[2])} />}
-        {tab === TABS[2] && catalog && <Cohorts catalog={catalog} userId={user} role={me?.role} buttons={buttons} />}
-        {tab === TABS[3] && <Runs />}
-      </main>
-      <footer>Emails are encrypted (AES-256-GCM) the moment data arrives; only the push step decrypts them, in memory. Phone numbers are never read.</footer>
+      </aside>
+
+      <div className="main">
+        <header className="topbar">
+          <div className="crumb">{ROUTES.find(r => r.id === route)?.label}</div>
+          <div className="who">
+            {me && <Avatar name={me.name} />}
+            <div className="who-text"><select aria-label="Acting as" value={user} onChange={e => { setU(e.target.value); setUser(e.target.value); }}>
+              {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select><span className="muted tiny">{roleLabel} · demo sign-in</span></div>
+          </div>
+        </header>
+        {down && <div className="alert bad banner"><Icon name="alert" size={16} />Can't reach the API. Is <code>npm run dev</code> running? Check the <code>[api]</code> lines in your terminal.</div>}
+        <main key={user}>
+          {route === 'home' && <Home userName={me?.name ?? ''} role={me?.role} datasets={datasets} go={go}
+            startPreset={p => { setPreset(p); go('build'); }} openCohort={id => { setOpenCohort(id); go('cohorts'); }} />}
+          {route === 'build' && catalog && <Builder catalog={catalog} datasets={datasets} role={me?.role} buttons={buttons}
+            preset={preset} onPresetUsed={() => setPreset(null)} onSaved={() => { loadPending(); go('cohorts'); }} />}
+          {route === 'cohorts' && catalog && <Cohorts catalog={catalog} userId={user} role={me?.role} buttons={buttons} ctMode={health?.clevertap ?? 'dry-run'}
+            onChanged={loadPending} openId={openCohort} />}
+          {route === 'history' && <Runs />}
+          {route === 'data' && <DataSource datasets={datasets} reload={loadDatasets} role={me?.role} />}
+        </main>
+      </div>
     </div>
   );
 }

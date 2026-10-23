@@ -38,6 +38,20 @@ Without CleverTap settings the push is a **dry run**: the CSV is built and measu
 
 Offline checks: `npm test`
 
+## The app at a glance
+
+Use the sidebar to move between the five pages:
+
+| Page | What you do there |
+|---|---|
+| **Home** | See key numbers and audiences waiting on you, start from a one-click campaign (e.g. "Bought Bed, not Mattress"), see recent sends |
+| **Build audience** | Filters on the left. The count, charts and customer table on the right update **live** as you change filters. Click any chart slice or bar to add it as a filter; click a chip's × to remove one. Then "Save audience…" |
+| **Audiences** | Tabs by status and search. Click a row for details: filters, delivery rules, locked funnel, timeline. Submit, approve & lock, reject (with a reason) or send, each with a confirmation step |
+| **Send history** | Every upload, with its steps; expand a row for detail |
+| **Data sources** | Drag-and-drop upload with a validation report, the Power BI setup checklist, dataset cards |
+
+Toast messages confirm each action, and Esc closes dialogs. The developer window (`/developer`) uses the same look.
+
 ## Marketing window: audience, charts and "who gets it"
 
 After **Preview count** the marketing window shows three things.

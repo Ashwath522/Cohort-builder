@@ -26,7 +26,7 @@ export function Kpi({ label, value, sub, hero }: { label: string; value: string;
 }
 
 /** Part-to-whole for ≤ 3 classes. Legend carries label, count and share (colour is never the only cue). */
-export function Donut({ title, data, note }: { title: string; data: Datum[]; note?: string }) {
+export function Donut({ title, data, note, onSelect }: { title: string; data: Datum[]; note?: string; onSelect?: (label: string) => void }) {
   const { show, hide, el } = useTip();
   const total = data.reduce((s, d) => s + d.count, 0);
   const R = 70, r = 46, C = 90;
@@ -49,13 +49,14 @@ export function Donut({ title, data, note }: { title: string; data: Datum[]; not
       <div className="donut-wrap">
         <svg viewBox="0 0 180 180" width="150" height="150" role="img" aria-label={`${title}: ${data.map(d => `${d.label} ${d.count}`).join(', ')}`}>
           {arcs.filter(a => a.show).map(a =>
-            <path key={a.d.label} d={a.path} fill={SERIES[a.i % SERIES.length]} stroke={SURFACE} strokeWidth={2}
-              onMouseMove={e => show(e, <><b>{a.d.label}</b><br />{a.d.count.toLocaleString()} · {pct(a.d.count, total)}</>)} onMouseLeave={hide} />)}
+            <path key={a.d.label} d={a.path} fill={SERIES[a.i % SERIES.length]} stroke={SURFACE} strokeWidth={2} className={onSelect ? 'clickable' : ''}
+              onClick={() => onSelect?.(a.d.label)}
+              onMouseMove={e => show(e, <><b>{a.d.label}</b><br />{a.d.count.toLocaleString()} · {pct(a.d.count, total)}{onSelect && <><br /><i>Click to filter</i></>}</>)} onMouseLeave={hide} />)}
           <text x={C} y={C - 2} textAnchor="middle" fontSize="20" fontWeight="600" fill={INK}>{total.toLocaleString()}</text>
           <text x={C} y={C + 16} textAnchor="middle" fontSize="11" fill={INK2}>customers</text>
         </svg>
         <ul className="legend">
-          {data.map((d, i) => <li key={d.label}><span className="swatch" style={{ background: SERIES[i % SERIES.length] }} />
+          {data.map((d, i) => <li key={d.label} className={onSelect ? 'clickable' : ''} onClick={() => onSelect?.(d.label)} title={onSelect ? 'Click to filter' : undefined}><span className="swatch" style={{ background: SERIES[i % SERIES.length] }} />
             <span className="lg-label">{d.label}</span><span className="lg-val">{d.count.toLocaleString()}</span><span className="lg-pct">{pct(d.count, total)}</span></li>)}
         </ul>
       </div>
@@ -75,7 +76,7 @@ const barPath = (x: number, y: number, w: number, h: number, horizontal: boolean
 };
 
 /** Ordered buckets (recency, spend bands) as columns, one hue. */
-export function Columns({ title, data, note }: { title: string; data: Datum[]; note?: string }) {
+export function Columns({ title, data, note, onSelect }: { title: string; data: Datum[]; note?: string; onSelect?: (label: string) => void }) {
   const { show, hide, el } = useTip();
   const total = data.reduce((s, d) => s + d.count, 0);
   const max = Math.max(1, ...data.map(d => d.count));
@@ -89,7 +90,7 @@ export function Columns({ title, data, note }: { title: string; data: Datum[]; n
         {data.map((d, i) => {
           const h = ((H - padB - padT) * d.count) / max;
           const x = padL + i * slot + (slot - bw) / 2, y = H - padB - h;
-          return <g key={d.label} onMouseMove={e => show(e, <><b>{d.label}</b><br />{d.count.toLocaleString()} · {pct(d.count, total)}</>)} onMouseLeave={hide}>
+          return <g key={d.label} className={onSelect && d.count ? 'clickable' : ''} onClick={() => d.count && onSelect?.(d.label)} onMouseMove={e => show(e, <><b>{d.label}</b><br />{d.count.toLocaleString()} · {pct(d.count, total)}{onSelect && d.count > 0 && <><br /><i>Click to filter</i></>}</>)} onMouseLeave={hide}>
             <rect x={padL + i * slot} y={padT} width={slot} height={H - padB - padT} fill="transparent" />
             {d.count > 0 && <path d={barPath(x, y, bw, h, false)} fill={SERIES[0]} />}
             <text x={x + bw / 2} y={y - 5} textAnchor="middle" fontSize="10.5" fill={INK2}>{d.count.toLocaleString()}</text>
@@ -105,7 +106,7 @@ export function Columns({ title, data, note }: { title: string; data: Datum[]; n
 }
 
 /** Ranked categories (categories, cities) as horizontal bars, one hue, value at the bar end. */
-export function HBars({ title, data, base, note }: { title: string; data: Datum[]; base: number; note?: string }) {
+export function HBars({ title, data, base, note, onSelect }: { title: string; data: Datum[]; base: number; note?: string; onSelect?: (label: string) => void }) {
   const { show, hide, el } = useTip();
   const max = Math.max(1, ...data.map(d => d.count));
   const rowH = 22, labelW = 110, W = 360, H = Math.max(rowH, data.length * rowH) + 6;
@@ -117,7 +118,7 @@ export function HBars({ title, data, base, note }: { title: string; data: Datum[
           <line x1={labelW} x2={labelW} y1={0} y2={H} stroke={GRID} />
           {data.map((d, i) => {
             const w = ((W - labelW - 70) * d.count) / max, y = i * rowH + 4;
-            return <g key={d.label} onMouseMove={e => show(e, <><b>{d.label}</b><br />{d.count.toLocaleString()} customers · {pct(d.count, base)} of audience</>)} onMouseLeave={hide}>
+            return <g key={d.label} className={onSelect ? 'clickable' : ''} onClick={() => onSelect?.(d.label)} onMouseMove={e => show(e, <><b>{d.label}</b><br />{d.count.toLocaleString()} customers · {pct(d.count, base)} of audience{onSelect && <><br /><i>Click to filter</i></>}</>)} onMouseLeave={hide}>
               <rect x={0} y={y - 2} width={W} height={rowH} fill="transparent" />
               <text x={labelW - 8} y={y + 12} textAnchor="end" fontSize="11" fill={INK2}>{d.label.length > 16 ? d.label.slice(0, 15) + '…' : d.label}</text>
               <path d={barPath(labelW, y, w, 14, true)} fill={SERIES[0]} />

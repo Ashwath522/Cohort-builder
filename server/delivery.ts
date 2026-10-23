@@ -29,7 +29,8 @@ export function cleanDelivery(d: Partial<Delivery> | undefined, source: 'excel' 
   if (holdoutPct < 0 || holdoutPct > 50) throw new Error('Control group must be 0–50%');
   const suppressDays = Number(x.suppressDays) || 0;
   if (suppressDays < 0 || suppressDays > 365) throw new Error('Suppression must be 0–365 days');
-  return { sortBy: x.sortBy, dir: x.dir, limit, holdoutPct, suppressDays };
+  const seed = typeof x.seed === 'string' && /^[a-z0-9]{4,32}$/i.test(x.seed) ? x.seed : undefined;
+  return { sortBy: x.sortBy, dir: x.dir, limit, holdoutPct, suppressDays, seed };
 }
 
 /** Sort; blanks always last, whatever the direction. */
@@ -58,7 +59,7 @@ export function recentlyMessaged(days: number, exceptCohortId?: string): Set<str
   return out;
 }
 
-/** Deterministic control-group pick, seeded by the segment name: preview, approval and re-runs pick the same people. */
+/** Deterministic control-group pick (seed saved with the audience): preview, approval and re-runs pick the same people. */
 const inHoldout = (seed: string, emailHash: string, pct: number) =>
   pct > 0 && crypto.createHash('sha256').update(seed + emailHash).digest().readUInt16BE(0) % 100 < pct;
 
@@ -78,7 +79,7 @@ export function applyDelivery(rows: CustomerRow[], d: Delivery, asOf: string, se
     funnel.push({ step: `Top ${d.limit.toLocaleString()} by ${SORTS[d.sortBy].toLowerCase()} (${order})`, count: r.length });
   }
   const send: CustomerRow[] = [], holdout: CustomerRow[] = [];
-  for (const x of r) (inHoldout(seed, x.email_hash, d.holdoutPct) ? holdout : send).push(x);
+  for (const x of r) (inHoldout(d.seed ?? seed, x.email_hash, d.holdoutPct) ? holdout : send).push(x);
   if (d.holdoutPct) funnel.push({ step: `Control group kept aside (${d.holdoutPct}%, not sent)`, count: holdout.length, aside: true });
   funnel.push({ step: 'Will be sent to CleverTap', count: send.length });
   return { send, holdout, funnel };
