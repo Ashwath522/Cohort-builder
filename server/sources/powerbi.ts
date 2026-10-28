@@ -1,5 +1,4 @@
 import { config, pbiConfigured } from '../config.js';
-import { encrypt, hashEmail, isValidEmail, maskEmail, normaliseEmail } from '../crypto.js';
 import type { CustomerRow, Group } from '../model.js';
 import { buildDax, loadMapping } from './dax.js';
 
@@ -16,6 +15,7 @@ export const PBI_REQUIREMENTS = [
   { item: 'Workspace ID (from the report URL: app.powerbi.com/groups/<workspaceId>/...)', env: 'PBI_WORKSPACE_ID' },
   { item: 'Semantic model (dataset) ID (open the model in the workspace: .../datasets/<datasetId>/...)', env: 'PBI_DATASET_ID' },
   { item: 'Table, column and measure names from the Data pane → config/powerbi-mapping.json', env: null },
+  { item: 'A Fynd User ID column in the model (the Identity CleverTap uses); emails and phones are never queried', env: null },
   { item: 'Confirm whether the model uses row-level security (service principals are not supported on RLS models)', env: null },
 ];
 
@@ -73,26 +73,24 @@ export async function pbiCount(rules: Group): Promise<number> {
   return Number(rows[0]?.['[Audience]'] ?? 0);
 }
 
-/** Paged fetch of Customer ID + Email; each email is protected the moment it arrives. */
-export async function pbiFetchProtected(rules: Group) {
+/** Paged fetch of Customer ID (for paging) + Fynd user ID. No email or phone is ever requested. */
+export async function pbiFetchIds(rules: Group) {
   const m = loadMapping();
   const pageSize = config.pbi.pageSize;
   const out: CustomerRow[] = [];
   const seen = new Set<string>();
-  const stats = { received: 0, invalidEmail: 0, internalDomain: 0, duplicateEmail: 0, pages: 0 };
+  const stats = { received: 0, missingFyndId: 0, duplicate: 0, pages: 0 };
   let after: string | number | undefined;
   for (;;) {
     const rows = await executeQuery(buildDax(rules, m, 'fetch', { afterId: after, pageSize }));
     stats.pages++;
     for (const r of rows) {
       stats.received++;
-      const email = normaliseEmail(r['[email]']);
-      if (!isValidEmail(email)) { stats.invalidEmail++; continue; }
-      if (config.excludeDomains.includes(email.split('@')[1])) { stats.internalDomain++; continue; }
-      const h = hashEmail(email);
-      if (seen.has(h)) { stats.duplicateEmail++; continue; }
-      seen.add(h);
-      out.push({ customer_id: String(r['[customer_id]']), email_hash: h, email_enc: encrypt(email), email_masked: maskEmail(email) });
+      const fynd = String(r['[fynd_user_id]'] ?? '').trim();
+      if (!fynd) { stats.missingFyndId++; continue; }
+      if (seen.has(fynd)) { stats.duplicate++; continue; }
+      seen.add(fynd);
+      out.push({ customer_id: String(r['[customer_id]']), fynd_user_id: fynd });
     }
     if (rows.length < pageSize) break;
     after = rows[rows.length - 1]['[customer_id]'] as string | number;

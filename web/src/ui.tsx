@@ -78,8 +78,8 @@ export function Drawer({ title, children, onClose, subtitle }: { title: ReactNod
 // ───────────────────────── Small pieces ─────────────────────────
 const STATUS: Record<string, [string, string]> = {
   draft: ['Draft', 'muted'], pending_approval: ['Waiting for approval', 'warn'], approved: ['Approved · locked', 'info'],
-  rejected: ['Rejected', 'bad'], pushing: ['Pushing…', 'warn'], pushed: ['Sent to CleverTap', 'ok'], failed: ['Push failed', 'bad'],
-  success: ['Success', 'ok'], running: ['Running', 'warn'],
+  rejected: ['Rejected', 'bad'], tagging: ['Tagging… in progress', 'warn'], tagged: ['Tagged in CleverTap', 'ok'], failed: ['Failed', 'bad'],
+  success: ['Done', 'ok'], running: ['In progress', 'warn'],
 };
 export const StatusBadge = ({ status }: { status: string }) => {
   const [label, tone] = STATUS[status] ?? [status, 'muted'];

@@ -1,5 +1,10 @@
-/** Writes fake test files to sample/. All people are made up; emails use @example.com. */
+/**
+ * Writes fake test files to sample/. All people are made up.
+ * The Email and Phone columns are fake too, and are there to show the app never reads them:
+ * the only identity it uses is the Fynd User ID.
+ */
 import ExcelJS from 'exceljs';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 
 let seed = 42;
@@ -21,16 +26,16 @@ async function main() {
   fs.mkdirSync('sample', { recursive: true });
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Customer Audience');
-  ws.addRow(['Customer ID', 'Email', 'Phone', 'Registered At', 'First Purchase Date', 'Last Purchase Date',
+  ws.addRow(['Customer ID', 'Fynd User ID', 'Email', 'Phone', 'Registered At', 'First Purchase Date', 'Last Purchase Date',
              'Total Purchase Count', 'Lifetime GMV', 'Last Channel', 'City', 'Categories Bought']);
   const N = 3000;
   const lines: Array<[number, string, string, number]> = [];     // customer, order date, category, amount
   for (let i = 1; i <= N; i++) {
     const id = 5200000 + i;
-    let email = `customer${i}@example.com`;
-    if (i % 150 === 0) email = `staff${i}@urbanladder.com`;      // internal account → excluded
-    else if (i % 333 === 0) email = 'not-an-email';             // invalid → skipped
-    else if (i % 500 === 0) email = ` CUSTOMER${i - 1}@Example.com `; // duplicate after normalising
+    const email = `customer${i}@example.com`;                   // never read by the app
+    let fynd: string | null = crypto.createHash('sha1').update(`fynd-${id}`).digest('hex').slice(0, 24);
+    if (i % 333 === 0) fynd = null;                               // no Fynd user ID yet → skipped
+    else if (i % 500 === 0) fynd = crypto.createHash('sha1').update(`fynd-${id - 1}`).digest('hex').slice(0, 24); // duplicate → skipped
     const reg = START + rnd() * (END - START);
     const orders = pick([0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 3, 5]);
     const dates = Array.from({ length: orders }, () => reg + rnd() * (END - reg)).sort((a, b) => a - b);
@@ -40,7 +45,7 @@ async function main() {
       gmv += amt; cats.add(cat); lines.push([id, fmt(d), cat, amt]);
     }
     ws.addRow([
-      id, email, `9${String(Math.floor(rnd() * 1e9)).padStart(9, '0')}`, fmt(reg),
+      id, fynd, email, `9${String(Math.floor(rnd() * 1e9)).padStart(9, '0')}`, fmt(reg),
       orders ? fmt(dates[0]) : null, orders ? fmt(dates[orders - 1]) : null, orders, gmv,
       orders ? pick(['Online', 'Store', 'App']) : null,
       pick(['Bangalore', 'Mumbai', 'Delhi', 'Hyderabad', 'Pune', 'Chennai']),
@@ -56,9 +61,9 @@ async function main() {
 
   const bad = new ExcelJS.Workbook();
   const bs = bad.addWorksheet('Sheet1');
-  bs.addRow(['Customer ID', 'Name', 'Last Purchase Date']);
-  bs.addRow([1, 'Test', '01/01/2025']);
-  await bad.xlsx.writeFile('sample/sample_missing_email.xlsx');
-  console.log(`Wrote sample/sample_customers.xlsx (${N} fake customers + order lines) and sample/sample_missing_email.xlsx`);
+  bs.addRow(['Customer ID', 'Email', 'Last Purchase Date']);
+  bs.addRow([1, 'test@example.com', '01/01/2025']);
+  await bad.xlsx.writeFile('sample/sample_missing_fynd_id.xlsx');
+  console.log(`Wrote sample/sample_customers.xlsx (${N} fake customers + order lines) and sample/sample_missing_fynd_id.xlsx`);
 }
 main();

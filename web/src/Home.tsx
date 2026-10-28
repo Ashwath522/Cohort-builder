@@ -23,7 +23,7 @@ export default function Home({ userName, role, datasets, go, startPreset, openCo
       <div className="hero">
         <div>
           <h1>{hello}, {first}</h1>
-          <p>Find customers by their full purchase history and send them to CleverTap — no raw lists, no waiting for a manual extract.</p>
+          <p>Find customers by their full purchase history and tag them in CleverTap as a segment — by Fynd user ID only, no contact lists.</p>
         </div>
         <div className="row">
           <button className="btn primary lg" onClick={() => go('build')}><Icon name="filter" size={17} />Build an audience</button>
@@ -33,9 +33,9 @@ export default function Home({ userName, role, datasets, go, startPreset, openCo
 
       <div className="kpis">
         <div className="kpi"><div className="kpi-label">Customers in latest data</div><div className="kpi-value">{latest ? latest.report.validRows.toLocaleString() : '—'}</div><div className="kpi-sub">{latest ? `as of ${latest.dataAsOf}` : 'no upload yet'}</div></div>
-        <div className="kpi"><div className="kpi-label">Audiences</div><div className="kpi-value">{cohorts.length}</div><div className="kpi-sub">{cohorts.filter(c => c.status === 'pushed').length} sent</div></div>
+        <div className="kpi"><div className="kpi-label">Audiences</div><div className="kpi-value">{cohorts.length}</div><div className="kpi-sub">{cohorts.filter(c => c.status === 'tagged').length} tagged</div></div>
         <div className={`kpi ${pending.length ? 'attn' : ''}`}><div className="kpi-label">Waiting for approval</div><div className="kpi-value">{pending.length}</div><div className="kpi-sub">{pending.length ? 'needs an approver' : 'all clear'}</div></div>
-        <div className="kpi"><div className="kpi-label">Customers sent, last 30 days</div><div className="kpi-value">{sent30.reduce((s, r) => s + (r.rowsSent ?? 0), 0).toLocaleString()}</div><div className="kpi-sub">{sent30.length} sends</div></div>
+        <div className="kpi"><div className="kpi-label">Customers tagged, last 30 days</div><div className="kpi-value">{sent30.reduce((s, r) => s + (r.rowsTagged ?? 0), 0).toLocaleString()}</div><div className="kpi-sub">{sent30.length} segments tagged</div></div>
       </div>
 
       <div className="home-grid">
@@ -54,10 +54,10 @@ export default function Home({ userName, role, datasets, go, startPreset, openCo
           </button>)}</div>
         </section>
         <section className="card span2">
-          <div className="card-head"><h2>Recent sends</h2><button className="btn link sm" onClick={() => go('history')}>History</button></div>
-          {runs.length === 0 ? <Empty icon="send" title="No sends yet" /> : <ul className="mini-list">{runs.slice(0, 5).map(r => <li key={r.id}>
-            <div><div className="strong mono">{r.segmentName}</div><div className="muted small">{r.mode === 'dry-run' ? 'dry run' : 'CleverTap'} · by {r.startedBy} · {timeAgo(r.startedAt)}</div></div>
-            <div className="row tight"><span className="num">{r.rowsSent?.toLocaleString() ?? 0}</span><StatusBadge status={r.status} /></div>
+          <div className="card-head"><h2>Recently tagged</h2><button className="btn link sm" onClick={() => go('history')}>History</button></div>
+          {runs.length === 0 ? <Empty icon="send" title="Nothing tagged yet" /> : <ul className="mini-list">{runs.slice(0, 5).map(r => <li key={r.id}>
+            <div><div className="strong mono">{r.segmentName}</div><div className="muted small">{r.mode === 'dry-run' ? 'dry run' : 'CleverTap'}{r.attempt > 1 ? ` · retry ${r.attempt - 1}` : ''} · by {r.startedBy} · {timeAgo(r.startedAt)}</div></div>
+            <div className="row tight"><span className="num">{r.rowsTagged?.toLocaleString() ?? 0}</span><StatusBadge status={r.status} /></div>
           </li>)}</ul>}
         </section>
       </div>

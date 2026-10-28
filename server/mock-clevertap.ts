@@ -1,7 +1,8 @@
 /**
  * Local stand-in for CleverTap's Custom List API, for testing without a CleverTap account.
  * Run: npm run mock:clevertap   then set CT_BASE_URL=http://localhost:4010, CT_ACCOUNT_ID=TEST, CT_PASSCODE=TEST
- * About 90% of emails "have a profile", so you can see uploaded vs matched.
+ * About 90% of Fynd user IDs "have a profile", so you can see uploaded vs matched.
+ * To test failures: POST /_fail?step=1|2|3&times=N makes the next N calls to that step fail with a 500.
  */
 import express from 'express';
 import crypto from 'node:crypto';
@@ -10,16 +11,20 @@ const app = express();
 const PORT = 4010;
 const uploads = new Map<string, string | 'USED' | null>();
 const segments: Record<string, { uploaded: number; matched: number; at: string }> = {};
-const hasProfile = (email: string) => crypto.createHash('md5').update(email).digest()[0] < 230;
+const fail: Record<string, number> = {};
+const failing = (step: string) => (fail[step] ?? 0) > 0 && fail[step]-- > 0;
+const hasProfile = (id: string) => crypto.createHash('md5').update(id).digest()[0] < 230;
 const auth = (req: express.Request) => req.header('X-CleverTap-Account-Id') === 'TEST' && req.header('X-CleverTap-Passcode') === 'TEST';
 
 app.post('/get_custom_list_segment_url', (req, res) => {
+  if (failing('1')) return res.status(500).json({ status: 'fail', error: 'mock_failure' });
   if (!auth(req)) return res.status(401).json({ status: 'fail', error: 'Invalid credentials' });
   const t = crypto.randomUUID();
   uploads.set(t, null);
   res.json({ status: 'success', presignedS3URL: `http://localhost:${PORT}/s3/${t}` });
 });
 app.put('/s3/:t', express.text({ type: '*/*', limit: '200mb' }), (req, res) => {
+  if (failing('2')) return res.status(500).send('mock_failure');
   const u = uploads.get(req.params.t);
   if (u === undefined) return res.status(403).send('AccessDenied');
   if (u === 'USED') return res.status(400).json({ error: 'url_already_used' });
@@ -27,6 +32,7 @@ app.put('/s3/:t', express.text({ type: '*/*', limit: '200mb' }), (req, res) => {
   res.sendStatus(200);
 });
 app.post('/upload_custom_list_segment_completed', express.json(), (req, res) => {
+  if (failing('3')) return res.status(500).json({ status: 'fail', error: 'mock_failure' });
   if (!auth(req)) return res.status(401).json({ status: 'fail', error: 'Invalid credentials' });
   const missing = ['name', 'email', 'filename', 'creator', 'url'].filter(k => !(k in req.body));
   if (missing.length) return res.status(400).json({ status: 'fail', error: 'missing_fields', fields: missing });
@@ -40,6 +46,7 @@ app.post('/upload_custom_list_segment_completed', express.json(), (req, res) => 
   console.log(`[mock-clevertap] segment "${req.body.name}": ${ids.length} uploaded, ${segments[req.body.name].matched} matched`);
   res.json({ status: 'success' });
 });
+app.post('/_fail', (req, res) => { fail[String(req.query.step)] = Number(req.query.times ?? 1); res.json(fail); });
 app.get('/_segments', (_req, res) => res.json(segments));   // mock only: see what "CleverTap" received
 
 app.listen(PORT, () => console.log(`Mock CleverTap on http://localhost:${PORT}  (GET /_segments to inspect)`));

@@ -1,9 +1,9 @@
 {
-  "_readme": "Map each app filter to YOUR semantic model. Replace the table/column names with the real ones from the Power BI Data pane. Use 'Table'[Column] for columns and [Measure] for measures. Set a field to null if the model doesn't have it.",
+  "_readme": "Map each app filter to YOUR semantic model. Replace the table/column names with the real ones from the Power BI Data pane. Use 'Table'[Column] for columns and [Measure] for measures. Set a field to null if the model doesn't have it. fyndUserId must be the value CleverTap uses as Identity; no email or phone column is ever queried.",
   "customerTable": "Customers",
   "customerId": "'Customers'[Customer ID]",
   "customerIdIsNumber": true,
-  "email": "'Customers'[Email]",
+  "fyndUserId": "'Customers'[Fynd User ID]",
   "fields": {
     "registered_at": "'Customers'[Registered At]",
     "first_purchase_date": "'Customers'[First_Purchase_Date]",

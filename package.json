@@ -2,11 +2,10 @@
   "name": "cohort-builder",
   "version": "0.1.0",
   "private": true,
-  "description": "Cohort Builder: build customer segments from Power BI or Excel and push them to CleverTap as custom lists, without exposing raw emails.",
+  "description": "Cohort Builder: build customer segments from Power BI or Excel and tag them in CleverTap as custom lists, by Fynd user ID only (no email or phone).",
   "type": "module",
   "scripts": {
-    "setup": "npm install && npm run keys && npm run sample",
-    "keys": "tsx scripts/gen-keys.ts",
+    "setup": "npm install && node -e \"require('fs').existsSync('.env')||require('fs').copyFileSync('.env.example','.env')\" && npm run sample",
     "sample": "tsx scripts/make-sample.ts",
     "dev": "concurrently -n api,web -c blue,green \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "tsx watch server/index.ts",

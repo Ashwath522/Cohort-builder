@@ -311,3 +311,12 @@ table.params input, table.params select { width: 100%; }
   .actionbar { left: 16px; right: 16px; transform: none; width: auto; }
   .results-head { grid-template-columns: 1fr; } .preset-cards, .form-grid { grid-template-columns: 1fr; }
 }
+
+/* History page */
+table.kv { width: 100%; font-size: 13px; margin: 8px 0 12px; border-collapse: collapse; }
+table.kv th { text-align: left; color: var(--muted); font-weight: 500; width: 170px; padding: 5px 8px 5px 0; vertical-align: top; }
+table.kv td { padding: 5px 0; }
+.attempt { border: 1px solid var(--line-2); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+.attempt .timeline { margin-top: 8px; }
+.search.wide { min-width: 0; width: 100%; margin: 6px 0 10px; }
+table.results.compact td, table.results.compact th { padding: 6px 8px; }

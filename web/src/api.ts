@@ -29,12 +29,13 @@ export interface Cohort {
 }
 export interface Run {
   id: string; cohortId: string; segmentName: string; mode: string; startedBy: string; startedAt: string; finishedAt?: string;
-  status: string; rowsSent?: number; csvBytes?: number; csvSha256?: string; error?: string;
+  status: string; rowsTagged?: number; csvBytes?: number; csvSha256?: string; error?: string; failedStep?: string; attempt: number;
   steps: Array<{ at: string; step: string; ok: boolean; detail?: string }>;
 }
 
 let currentUser = location.pathname.startsWith('/developer') ? 'dev' : 'priya';
 export const setUser = (u: string) => { currentUser = u; };
+export const currentUserId = () => currentUser;
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = { 'X-User': currentUser };

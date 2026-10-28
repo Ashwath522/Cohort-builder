@@ -9,7 +9,7 @@ export interface PbiMapping {
   customerTable: string;
   customerId: string;
   customerIdIsNumber: boolean;
-  email: string;
+  fyndUserId: string;          // the column holding the CleverTap identity; the only identity ever fetched
   fields: Partial<Record<FieldKey, string | null>>;
   choices: { categories: string[]; last_channel: string[]; city: string[] };
 }
@@ -98,5 +98,5 @@ export function buildDax(rules: Group, m: PbiMapping, mode: 'count' | 'fetch', o
   const after = opts.afterId === undefined ? '' :
     `${m.customerId} > ${m.customerIdIsNumber ? num(opts.afterId) : str(opts.afterId)} && `;
   return `${define}EVALUATE\nTOPN(${opts.pageSize ?? 100000}, SELECTCOLUMNS(\n    FILTER(${table}, ${after}${where}),\n` +
-    `    "customer_id", ${m.customerId}, "email", ${m.email}),\n  [customer_id], ASC)\nORDER BY [customer_id] ASC`;
+    `    "customer_id", ${m.customerId}, "fynd_user_id", ${m.fyndUserId}),\n  [customer_id], ASC)\nORDER BY [customer_id] ASC`;
 }

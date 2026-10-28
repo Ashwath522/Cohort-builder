@@ -15,7 +15,8 @@ ROW_LIMIT = 1000          # real API: 100,000 rows / 1M values; scaled down to f
 TOKENS, SEGMENTS, UPLOADS = set(), {}, {}
 CT_ACCOUNT, CT_PASSCODE = "TEST-ACCOUNT", "TEST-PASSCODE"
 random.seed(7)
-CT_PROFILES = {f"user{i}@example.com" for i in range(1, 20001) if random.random() < 0.9}  # ~90% have a CT profile
+import hashlib
+CT_PROFILES = {hashlib.sha1(f"fynd-{i}".encode()).hexdigest()[:24] for i in range(1, 20001) if random.random() < 0.9}  # ~90% of Fynd IDs have a CT profile
 API_CALLS = []
 
 # ───────────────────────── DAX subset → SQL ─────────────────────────

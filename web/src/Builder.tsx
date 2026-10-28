@@ -156,7 +156,7 @@ export default function Builder({ catalog, datasets, role, buttons, onSaved, pre
           </section>
 
           <section className="card">
-            <div className="card-head"><h2>Who gets it</h2><span className="muted small">applied when approved</span></div>
+            <div className="card-head"><h2>Who gets tagged</h2><span className="muted small">applied when approved</span></div>
             <div className="form-grid">
               <label>Order by
                 <select value={delivery.sortBy} onChange={e => setDelivery({ ...delivery, sortBy: e.target.value as SortKey })}>
@@ -168,7 +168,7 @@ export default function Builder({ catalog, datasets, role, buttons, onSaved, pre
                   <option value="desc">{dirLabel(delivery.sortBy, 'desc')}</option><option value="asc">{dirLabel(delivery.sortBy, 'asc')}</option>
                 </select>
               </label>
-              <label>Send to
+              <label>Who to tag
                 <select value={delivery.limit ? 'top' : 'all'} disabled={source === 'powerbi'} onChange={e => setDelivery({ ...delivery, limit: e.target.value === 'top' ? Math.max(1, Math.min(1000, preview?.count ?? 1000)) : undefined })}>
                   <option value="all">Everyone matched</option><option value="top">Only the top…</option>
                 </select>
@@ -181,7 +181,7 @@ export default function Builder({ catalog, datasets, role, buttons, onSaved, pre
                   {[0, 5, 10, 20].map(p => <option key={p} value={p}>{p === 0 ? 'None' : `${p}% kept aside`}</option>)}
                 </select>
               </label>
-              <label>Skip if messaged in last
+              <label>Skip if tagged in another segment in last
                 <select value={delivery.suppressDays} onChange={e => setDelivery({ ...delivery, suppressDays: Number(e.target.value) })}>
                   {[0, 7, 14, 30, 60].map(d => <option key={d} value={d}>{d === 0 ? 'Off' : `${d} days`}</option>)}
                 </select>
@@ -223,7 +223,7 @@ export default function Builder({ catalog, datasets, role, buttons, onSaved, pre
       </div>}
 
       {sourceReady && <div className="actionbar">
-        <div><b>{sendCount.toLocaleString()}</b> customers will be sent{preview?.funnel && preview.funnel.length > 2 && <span className="muted"> after delivery rules</span>}</div>
+        <div><b>{sendCount.toLocaleString()}</b> customers will be tagged{preview?.funnel && preview.funnel.length > 2 && <span className="muted"> after delivery rules</span>}</div>
         <button className="btn primary" disabled={!canSave || !preview || sendCount === 0 || !!hint} onClick={() => setSaveOpen(true)} title={canSave ? '' : 'Only a Creator can save'}>
           <Icon name="check" size={16} />Save audience…</button>
       </div>}
@@ -259,7 +259,7 @@ function Insights({ preview, addFilter, loading }: { preview: Preview | null; ad
 
 function CustomerTable({ rows, delivery, catalog, sortBy, page, setPage }: { rows: RowPage | null; delivery: Delivery; catalog: Catalog; sortBy: (k: SortKey) => void; page: number; setPage: (p: number) => void }) {
   const cols: Array<[string, string, SortKey | null]> = [
-    ['customer_id', 'Customer', null], ['city', 'City', null], ['last_channel', 'Channel', null],
+    ['customer_id', 'Fynd user ID', null], ['city', 'City', null], ['last_channel', 'Channel', null],
     ['last_purchase_date', 'Last purchase', 'last_purchase_date'], ['days_since_last_purchase', 'Days since', 'days_since_last_purchase'],
     ['lifetime_order_count', 'Orders', 'lifetime_order_count'], ['lifetime_gmv', 'Lifetime spend', 'lifetime_gmv'], ['aov', 'Avg order', 'aov'],
     ['registered_at', 'Registered', 'registered_at'], ['categories', 'Categories', null],
@@ -269,13 +269,13 @@ function CustomerTable({ rows, delivery, catalog, sortBy, page, setPage }: { row
   if (!rows) return <div className="card"><Skeleton h={24} /><div style={{ height: 8 }} /><Skeleton h={24} /><div style={{ height: 8 }} /><Skeleton h={24} /></div>;
   const pages = Math.max(1, Math.ceil(rows.total / rows.pageSize));
   return <section className="card flush">
-    <div className="card-head pad"><span className="muted small">Sorted by <b>{catalog.sorts[delivery.sortBy].toLowerCase()}</b>, {dirLabel(delivery.sortBy, delivery.dir).toLowerCase()}. This order decides “Only the top…”. Emails are masked.</span></div>
+    <div className="card-head pad"><span className="muted small">Sorted by <b>{catalog.sorts[delivery.sortBy].toLowerCase()}</b>, {dirLabel(delivery.sortBy, delivery.dir).toLowerCase()}. This order decides “Only the top…”. Customers are shown by ID only; the app has no email or phone.</span></div>
     {rows.total === 0 ? <Empty icon="users" title="Nobody matches">Try removing a filter.</Empty> : <>
       <div className="table-scroll"><table className="results">
         <thead><tr>{cols.map(([key, label, sk]) => <th key={key} className={sk ? 'sortable' : ''} onClick={() => sk && sortBy(sk)} aria-sort={sk && delivery.sortBy === sk ? (delivery.dir === 'desc' ? 'descending' : 'ascending') : undefined}>
           {label}{sk && <span className={`arrow ${delivery.sortBy === sk ? 'on' : ''}`}>{delivery.sortBy === sk && delivery.dir === 'asc' ? '▲' : '▼'}</span>}</th>)}</tr></thead>
         <tbody>{rows.rows.map(r => <tr key={r.customer_id}>{cols.map(([key]) => <td key={key} className={['lifetime_gmv', 'aov', 'lifetime_order_count', 'days_since_last_purchase'].includes(key) ? 'num' : key === 'categories' ? 'wrap' : ''}>
-          {key === 'customer_id' ? <><div className="strong">{r.customer_id}</div><div className="muted small">{String(r.email)}</div></>
+          {key === 'customer_id' ? <><div className="strong mono">{String(r.fynd_user_id)}</div><div className="muted small">Customer {r.customer_id}</div></>
             : key === 'categories' ? <div className="tags">{r.categories.slice(0, 4).map(c => <span key={c} className="tag">{c}</span>)}{r.categories.length > 4 && <span className="muted small">+{r.categories.length - 4}</span>}</div>
             : fmt(key, r[key])}
         </td>)}</tr>)}</tbody>
@@ -306,7 +306,7 @@ function SaveModal({ name, setName, rules, delivery, catalog, buttons, preview, 
     `Ordered by ${catalog.sorts[delivery.sortBy].toLowerCase()} (${dirLabel(delivery.sortBy, delivery.dir).toLowerCase()})`,
     delivery.limit ? `only the top ${delivery.limit.toLocaleString()}` : 'everyone matched',
     delivery.holdoutPct ? `${delivery.holdoutPct}% control group` : 'no control group',
-    delivery.suppressDays ? `skip if messaged in last ${delivery.suppressDays} days` : 'no skip rule',
+    delivery.suppressDays ? `skip if tagged in another segment in last ${delivery.suppressDays} days` : 'no skip rule',
   ], [delivery, catalog]);
   const save = async () => {
     setBusy(true); setErr('');
@@ -327,9 +327,9 @@ function SaveModal({ name, setName, rules, delivery, catalog, buttons, preview, 
     <div className="summary-box">
       <div className="sb-row"><span className="muted">Filters</span><span>{describe(rules, catalog, buttons) || 'Everyone'}</span></div>
       <div className="sb-row"><span className="muted">Delivery</span><span>{summary.join(' · ')}</span></div>
-      <div className="sb-row"><span className="muted">Right now</span><span><b>{preview.count.toLocaleString()}</b> matched → <b>{(preview.funnel?.at(-1)?.count ?? preview.count).toLocaleString()}</b> to send</span></div>
+      <div className="sb-row"><span className="muted">Right now</span><span><b>{preview.count.toLocaleString()}</b> matched → <b>{(preview.funnel?.at(-1)?.count ?? preview.count).toLocaleString()}</b> to tag</span></div>
     </div>
-    <p className="muted small"><Icon name="lock" size={13} /> Nothing is sent yet. After you submit, a second person approves; that locks exactly who will be sent.</p>
+    <p className="muted small"><Icon name="lock" size={13} /> Nothing is tagged yet. After you submit, a second person approves; that locks exactly who will be tagged.</p>
     {err && <div className="alert bad">{err}</div>}
   </Modal>;
 }

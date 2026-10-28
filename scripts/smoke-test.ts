@@ -4,7 +4,6 @@ import ExcelJS from 'exceljs';
 import { ingestExcel } from '../server/sources/excel.js';
 import { matches, validateRules, RuleError, type RuleEnv } from '../server/filter.js';
 import { buildDax, loadMapping } from '../server/sources/dax.js';
-import { decrypt, keysReady } from '../server/crypto.js';
 import { runSql, checkDefinition } from '../server/customFilters.js';
 import { applyDelivery, sortRows } from '../server/delivery.js';
 import type { Group } from '../server/model.js';
@@ -12,23 +11,24 @@ import type { Group } from '../server/model.js';
 let failed = 0;
 const check = (name: string, ok: boolean, info = '') => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${info ? `  (${info})` : ''}`); if (!ok) failed++; };
 
-if (!keysReady()) { console.error('Run `npm run keys` first'); process.exit(1); }
 const buf = fs.readFileSync('sample/sample_customers.xlsx');
 const ds = await ingestExcel(buf, 'sample_customers.xlsx', 'test', '2026-10-20');
 check('sample loads', ds.report.validRows > 0, `${ds.report.validRows}/${ds.report.totalRows} valid`);
-check('phone column ignored', ds.report.ignoredColumns.some(c => /phone/i.test(c)));
-check('no plain emails stored', !JSON.stringify(ds.rows).match(/customer\d+@example\.com/));
-check('encryption round-trip', /@example\.com$/.test(decrypt(ds.rows[0].email_enc)));
+check('email and phone columns ignored', ['email', 'phone'].every(f => ds.report.ignoredColumns.some(c => c.toLowerCase().includes(f))));
+check('no email or phone stored anywhere', !/@example\.com|"9\d{9}"/.test(JSON.stringify(ds)));
+check('every row has a Fynd user ID', ds.rows.every(r => /^[0-9a-f]{24}$/.test(r.fynd_user_id)));
+check('missing / duplicate Fynd IDs skipped', ds.report.rowIssues.missingId > 0 && ds.report.rowIssues.duplicateId > 0,
+  `${ds.report.rowIssues.missingId} missing, ${ds.report.rowIssues.duplicateId} duplicate`);
 
 // Independent count straight from the sheet for the pilot rule
 const wb = new ExcelJS.Workbook(); await wb.xlsx.load(buf as unknown as ArrayBuffer);
 const ws = wb.worksheets[0]; const seen = new Set<string>(); let expected = 0;
 ws.eachRow((row, i) => {
   if (i === 1) return;
-  const email = String(row.getCell(2).value ?? '').trim().toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(email) || email.endsWith('@urbanladder.com') || seen.has(email)) return;
-  seen.add(email);
-  const lp = String(row.getCell(6).value ?? '');
+  const fynd = String(row.getCell(2).value ?? '').trim();
+  if (!fynd || seen.has(fynd)) return;
+  seen.add(fynd);
+  const lp = String(row.getCell(7).value ?? '');
   if (lp.slice(6, 10) === '2025') expected++;
 });
 const pilot: Group = { logic: 'AND', conditions: [{ field: 'last_purchase_date', op: 'between', value: ['2025-01-01', '2025-12-31'] }] };
@@ -57,12 +57,15 @@ const sorted = sortRows(buyers, 'lifetime_gmv', 'desc', ds.dataAsOf);
 check('sort: highest spend first', sorted.every((r, i) => i === 0 || (sorted[i - 1].lifetime_gmv ?? 0) >= (r.lifetime_gmv ?? 0)));
 const d1 = applyDelivery(buyers, { sortBy: 'lifetime_gmv', dir: 'desc', limit: 500, holdoutPct: 10, suppressDays: 0 }, ds.dataAsOf, 'seg_a');
 const d2 = applyDelivery(buyers, { sortBy: 'lifetime_gmv', dir: 'desc', limit: 500, holdoutPct: 10, suppressDays: 0 }, ds.dataAsOf, 'seg_a');
-check('top N + control group add up', d1.send.length + d1.holdout.length === 500, `${d1.send.length} sent + ${d1.holdout.length} control`);
+check('top N + control group add up', d1.tag.length + d1.holdout.length === 500, `${d1.tag.length} tagged + ${d1.holdout.length} control`);
 check('control group is repeatable', d1.holdout.map(r => r.customer_id).join() === d2.holdout.map(r => r.customer_id).join());
 check('control group ~10%', d1.holdout.length > 25 && d1.holdout.length < 80, `${d1.holdout.length} of 500`);
 
-try { await ingestExcel(fs.readFileSync('sample/sample_missing_email.xlsx'), 'x.xlsx', 'test', '2026-10-20'); check('rejects file without Email', false); }
-catch (e) { check('rejects file without Email', /Validation/.test((e as Error).message)); }
+try { await ingestExcel(fs.readFileSync('sample/sample_missing_fynd_id.xlsx'), 'x.xlsx', 'test', '2026-10-20'); check('rejects file without Fynd User ID', false); }
+catch (e) { check('rejects file without Fynd User ID', /Validation/.test((e as Error).message) && JSON.stringify((e as { report?: unknown }).report).includes('Fynd User ID')); }
+
+const dax2 = buildDax(pilot, loadMapping(), 'fetch', { pageSize: 1000 });
+check('Power BI fetch asks for Fynd user ID, never email', dax2.includes('[Fynd User ID]') && !/email|phone/i.test(dax2));
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nAll checks passed');
 process.exit(failed ? 1 : 0);

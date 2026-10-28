@@ -45,7 +45,7 @@ export default function DataSource({ datasets, reload, role }: { datasets: Datas
 
   return (
     <div className="page">
-      <div className="page-head"><div><h1>Data sources</h1><p className="muted">Where customer purchase history comes from. Emails are encrypted the moment data arrives.</p></div></div>
+      <div className="page-head"><div><h1>Data sources</h1><p className="muted">Where customer purchase history comes from. Only Fynd user IDs and purchase fields are read; email and phone columns are skipped.</p></div></div>
       <div className="grid2">
         <section className="card">
           <div className="card-head"><h2>Upload a file</h2><span className="badge muted">fallback · pilot</span></div>
@@ -56,7 +56,7 @@ export default function DataSource({ datasets, reload, role }: { datasets: Datas
             <input ref={input} type="file" accept=".xlsx,.csv" hidden onChange={e => pick(e.target.files?.[0])} />
             <Icon name="upload" size={28} />
             {file ? <><b>{file.name}</b><span className="muted small">{(file.size / 1024).toFixed(0)} KB · click to change</span></>
-              : <><b>Drop a Power BI export here</b><span className="muted small">or click to browse · .xlsx or .csv · needs Customer ID and Email</span></>}
+              : <><b>Drop a Power BI export here</b><span className="muted small">or click to browse · .xlsx or .csv · needs a Fynd User ID column</span></>}
           </div>
           <div className="row">
             <label className="inline-label">Exported on <input type="date" value={asOf} max={new Date().toISOString().slice(0, 10)} onChange={e => setAsOf(e.target.value)} /></label>
@@ -69,7 +69,7 @@ export default function DataSource({ datasets, reload, role }: { datasets: Datas
 
         <section className="card">
           <div className="card-head"><h2>Power BI</h2><span className={`badge ${pbi?.configured ? 'ok' : 'muted'}`}>{pbi?.configured ? 'connected' : 'setup needed'}</span></div>
-          <p className="muted">Primary source. The app asks the existing semantic model for counts during preview, and for Customer ID + Email only when an audience is approved.</p>
+          <p className="muted">Primary source. The app asks the existing semantic model for counts during preview, and for Fynd user IDs only when an audience is approved. Emails and phones are never queried.</p>
           {withEnv > 0 && <div className="progress-line"><span style={{ width: `${(done / withEnv) * 100}%` }} /><em className="muted small">{done} of {withEnv} settings filled in</em></div>}
           <ol className="checklist">
             {pbi?.requirements.map(r => <li key={r.item} className={r.done ? 'done' : ''}>

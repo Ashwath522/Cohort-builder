@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, post, setUser, type CustomFilter, type DatasetMeta, type FilterDefinition, type FilterParam, type ParamType } from './api';
 
 interface DevData { filters: CustomFilter[]; schema: Record<string, string[]>; paramTypes: ParamType[] }
-interface TestResult { count: number; total: number; ms: number; unknownIds: number; sample: Array<{ customer_id: string; email: string; last_purchase_date: string | null }>; dax: string | null }
+interface TestResult { count: number; total: number; ms: number; unknownIds: number; sample: Array<{ customer_id: string; fynd_user_id: string; last_purchase_date: string | null }>; dax: string | null }
 
 const EMPTY: FilterDefinition = {
   label: '', description: '', params: [{ name: 'category', label: 'Category', type: 'category' }],
@@ -154,8 +154,8 @@ WHERE category = :category
               {test && <>
                 <div className="big">{test.count.toLocaleString()} <span className="muted">of {test.total.toLocaleString()} customers · {test.ms} ms</span></div>
                 {test.unknownIds > 0 && <div className="warn-text small">{test.unknownIds} IDs returned by the query aren't in the customer sheet (ignored).</div>}
-                {test.sample.length > 0 && <table><thead><tr><th>Customer ID</th><th>Email (masked)</th><th>Last purchase</th></tr></thead><tbody>
-                  {test.sample.map(s => <tr key={s.customer_id}><td>{s.customer_id}</td><td>{s.email}</td><td>{s.last_purchase_date ?? '—'}</td></tr>)}
+                {test.sample.length > 0 && <table><thead><tr><th>Customer ID</th><th>Fynd user ID</th><th>Last purchase</th></tr></thead><tbody>
+                  {test.sample.map(s => <tr key={s.customer_id}><td>{s.customer_id}</td><td className="mono">{s.fynd_user_id}</td><td>{s.last_purchase_date ?? '—'}</td></tr>)}
                 </tbody></table>}
                 {test.dax && <><h3>DAX sent to Power BI (with these values)</h3><pre className="dax">{test.dax}</pre></>}
               </>}

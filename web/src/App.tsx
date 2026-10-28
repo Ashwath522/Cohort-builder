@@ -7,12 +7,12 @@ import Home from './Home';
 import Runs from './Runs';
 import { Avatar, Icon, ToastProvider } from './ui';
 
-interface Health { keysReady: boolean; clevertap: string; ctBaseUrl: string; powerbi: string; users: Array<{ id: string; name: string; role: string }> }
+interface Health { clevertap: string; identity?: string; logRetentionDays?: number; ctBaseUrl: string; powerbi: string; users: Array<{ id: string; name: string; role: string }> }
 const ROUTES = [
   { id: 'home', label: 'Home', icon: 'home' },
   { id: 'build', label: 'Build audience', icon: 'filter' },
   { id: 'cohorts', label: 'Audiences', icon: 'users' },
-  { id: 'history', label: 'Send history', icon: 'clock' },
+  { id: 'history', label: 'History', icon: 'clock' },
   { id: 'data', label: 'Data sources', icon: 'data' },
 ] as const;
 type Route = (typeof ROUTES)[number]['id'];
@@ -58,9 +58,8 @@ function Shell() {
           {health && <div className="sys">
             <div><span className={`led ${health.clevertap === 'live' ? 'on' : 'warn'}`} />CleverTap: {health.clevertap === 'live' ? 'connected' : 'dry run'}</div>
             <div><span className={`led ${health.powerbi === 'configured' ? 'on' : 'off'}`} />Power BI: {health.powerbi === 'configured' ? 'connected' : 'not set up'}</div>
-            {!health.keysReady && <div className="bad-text"><span className="led bad" />Keys missing: npm run keys</div>}
           </div>}
-          <div className="muted tiny"><Icon name="shield" size={13} /> Emails encrypted · phones never read</div>
+          <div className="muted tiny"><Icon name="shield" size={13} /> Fynd user IDs only · no email or phone</div>
         </div>
       </aside>
 
@@ -82,7 +81,7 @@ function Shell() {
             preset={preset} onPresetUsed={() => setPreset(null)} onSaved={() => { loadPending(); go('cohorts'); }} />}
           {route === 'cohorts' && catalog && <Cohorts catalog={catalog} userId={user} role={me?.role} buttons={buttons} ctMode={health?.clevertap ?? 'dry-run'}
             onChanged={loadPending} openId={openCohort} />}
-          {route === 'history' && <Runs />}
+          {route === 'history' && catalog && <Runs catalog={catalog} buttons={buttons} />}
           {route === 'data' && <DataSource datasets={datasets} reload={loadDatasets} role={me?.role} />}
         </main>
       </div>

@@ -7,12 +7,11 @@ export const config = {
   port: Number(env('PORT', '4000')),
   dataDir: path.resolve(env('DATA_DIR', './data')),
   retentionDays: Number(env('RETENTION_DAYS', '7')),
-  excludeDomains: env('EXCLUDE_DOMAINS', 'urbanladder.com').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+  // Segment log (who created/approved, when tagged, the Fynd user IDs added). Never less than 90 days.
+  logRetentionDays: Math.max(90, Number(env('LOG_RETENTION_DAYS', '90')) || 90),
   dateOrder: env('DATE_ORDER', 'DMY') as 'DMY' | 'MDY',
   staleWarnDays: Number(env('STALE_WARN_DAYS', '3')),
   staleBlockDays: Number(env('STALE_BLOCK_DAYS', '14')),
-  encKey: env('ENC_KEY'),
-  hmacKey: env('HMAC_KEY'),
   ct: {
     accountId: env('CT_ACCOUNT_ID'),
     passcode: env('CT_PASSCODE'),

@@ -4,15 +4,14 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config, ctConfigured, pbiConfigured } from './config.js';
-import { keysReady } from './crypto.js';
 import { analytics, withDerived, CATALOG, CUSTOMER_TYPES, customConditions, fieldValue, matches, OPS, RuleError, validateRules, type CustomSets, type RuleEnv } from './filter.js';
 import { applyDelivery, cleanDelivery, SORTS, sortRows } from './delivery.js';
 import type { Cohort, CustomFilter, CustomerRow, Dataset, Delivery, FilterDefinition, Group, Run, SortKey, Snapshot } from './model.js';
 import { store } from './store.js';
 import { ingestExcel } from './sources/excel.js';
 import { loadMapping, mappedFields, buildDax } from './sources/dax.js';
-import { PBI_REQUIREMENTS, lastRefresh, pbiCount, pbiFetchProtected, testConnection } from './sources/powerbi.js';
-import { pushToCleverTap } from './clevertap.js';
+import { PBI_REQUIREMENTS, lastRefresh, pbiCount, pbiFetchIds, testConnection } from './sources/powerbi.js';
+import { StepError, tagInCleverTap } from './clevertap.js';
 import { checkDefinition, filters, forgetDataset, PARAM_TYPES, placeholders, renderDax, runSql, SCHEMA, seedExamples, validateCustomCondition } from './customFilters.js';
 
 const app = express();
@@ -43,11 +42,11 @@ const freshness = (iso?: string) => {
   const d = (Date.now() - Date.parse(iso)) / 864e5;
   return { dataAsOf: iso, daysOld: Math.floor(d), level: d > config.staleBlockDays ? 'blocked' : d > config.staleWarnDays ? 'warn' : 'ok' };
 };
-const log = (msg: string) => console.log(`[${now()}] ${msg}`);   // counts only, never emails
+const log = (msg: string) => console.log(`[${now()}] ${msg}`);   // counts only, never ID lists
 
 // ── Health / setup ──
 app.get('/api/health', (_req, res) => res.json({
-  keysReady: keysReady(), clevertap: ctConfigured() ? 'live' : 'dry-run', ctBaseUrl: config.ct.baseUrl,
+  clevertap: ctConfigured() ? 'live' : 'dry-run', ctBaseUrl: config.ct.baseUrl, identity: 'Fynd user ID', logRetentionDays: config.logRetentionDays,
   powerbi: pbiConfigured() ? 'configured' : 'not-configured', users: USERS,
 }));
 app.get('/api/catalog', (_req, res) => res.json({ fields: CATALOG, ops: OPS, sorts: SORTS, customerTypes: CUSTOMER_TYPES }));
@@ -90,7 +89,7 @@ app.post('/api/sources/powerbi/test', h(async (req, res) => { userOf(req); res.j
 // ── Source helpers ──
 function excelDataset(id?: string): Dataset {
   const ds = id ? store.getDataset(id) : undefined;
-  if (!ds) throw Object.assign(new Error('Dataset not found (it may have expired). Upload the Excel again.'), { status: 404 });
+  if (!ds) throw Object.assign(new Error('Dataset not found (it may have expired, or was uploaded before the switch to Fynd user IDs). Upload the Excel again.'), { status: 404 });
   ds.fieldsAvailable = withDerived(ds.fieldsAvailable);          // datasets uploaded before derived fields existed
   return ds;
 }
@@ -140,7 +139,7 @@ app.post('/api/preview', h(async (req, res) => {
   res.json({ count: hit.length, total: ds!.rows.length, analytics: analytics(hit, ds!.rows.length, ds!.dataAsOf), funnel, freshness: freshness(ds!.dataAsOf) });
 }));
 
-/** The matching customers as a sortable, paged table. Emails are masked. */
+/** The matching customers as a sortable, paged table. Shows Fynd user IDs; there is no email or phone in the app. */
 app.post('/api/preview/rows', h(async (req, res) => {
   userOf(req);
   const ds = prepare(req.body);
@@ -153,7 +152,7 @@ app.post('/api/preview/rows', h(async (req, res) => {
   res.json({
     total: sorted.length, page, pageSize, sortBy, dir,
     rows: sorted.slice((page - 1) * pageSize, page * pageSize).map(r => ({
-      customer_id: r.customer_id, email: r.email_masked, city: r.city ?? null, last_channel: r.last_channel ?? null,
+      customer_id: r.customer_id, fynd_user_id: r.fynd_user_id, city: r.city ?? null, last_channel: r.last_channel ?? null,
       registered_at: r.registered_at ?? null, first_purchase_date: r.first_purchase_date ?? null, last_purchase_date: r.last_purchase_date ?? null,
       days_since_last_purchase: fieldValue(r, 'days_since_last_purchase', ds.dataAsOf) ?? null,
       lifetime_order_count: r.lifetime_order_count ?? null, lifetime_gmv: r.lifetime_gmv ?? null,
@@ -197,7 +196,7 @@ app.put('/api/dev/filters/:id', h((req, res) => {
   if (errs.length) return res.status(400).json({ error: errs.join('; '), errors: errs });
   f.draft = def; f.updatedAt = now(); filters.save(f); res.json(f);
 }));
-/** Test a draft on an uploaded dataset: count, sample (masked), time taken. Also shows the rendered DAX. */
+/** Test a draft on an uploaded dataset: count, sample, time taken. Also shows the rendered DAX. */
 app.post('/api/dev/filters/test', h(async (req, res) => {
   can(userOf(req), 'developer');
   const def = readDef(req.body.definition ?? {});
@@ -208,7 +207,7 @@ app.post('/api/dev/filters/test', h(async (req, res) => {
   const hit = ds.rows.filter(r => ids.has(r.customer_id));
   res.json({
     count: hit.length, total: ds.rows.length, ms, unknownIds: ids.size - hit.length,
-    sample: hit.slice(0, 5).map(r => ({ customer_id: r.customer_id, email: r.email_masked, last_purchase_date: r.last_purchase_date ?? null })),
+    sample: hit.slice(0, 5).map(r => ({ customer_id: r.customer_id, fynd_user_id: r.fynd_user_id, last_purchase_date: r.last_purchase_date ?? null })),
     dax: def.dax?.trim() ? renderDax(def, req.body.params ?? {}) : null, placeholders: placeholders(def.sql),
   });
 }));
@@ -229,7 +228,7 @@ app.post('/api/dev/filters/:id/archive', h((req, res) => {
   f.status = f.status === 'archived' ? (f.versions.length ? 'published' : 'draft') : 'archived'; f.updatedAt = now(); filters.save(f); res.json(f);
 }));
 
-// ── Cohorts: draft → pending_approval → approved (snapshot locked) → pushed ──
+// ── Cohorts: draft → pending_approval → approved (snapshot locked) → tagging → tagged / failed ──
 const SEGMENT_RE = /^[A-Za-z0-9_-]{3,80}$/;
 app.get('/api/cohorts', h((req, res) => { userOf(req); res.json(store.cohorts()); }));
 
@@ -281,7 +280,7 @@ app.post('/api/cohorts/:id/approve', h(async (req, res) => {
   if (c.status !== 'pending_approval') return res.status(409).json({ error: 'Only cohorts waiting for approval can be approved' });
   if (c.createdBy === u.id) return res.status(403).json({ error: 'The creator cannot approve their own cohort' });
 
-  let audience: CustomerRow[]; let dataAsOf: string | undefined;
+  let audience: CustomerRow[]; let dataAsOf: string | undefined; let skipped = '';
   if (c.source === 'excel') {
     const ds = excelDataset(c.datasetId);
     validateRules(c.rules, envFor('excel', ds));
@@ -290,55 +289,123 @@ app.post('/api/cohorts/:id/approve', h(async (req, res) => {
   } else {
     validateRules(c.rules, envFor('powerbi'));
     dataAsOf = (await lastRefresh().catch(() => null)) ?? undefined;
-    const r = await pbiFetchProtected(c.rules);
+    const r = await pbiFetchIds(c.rules);
     audience = r.rows;
+    if (r.stats.missingFyndId) skipped = `; ${r.stats.missingFyndId} skipped (no Fynd user ID in Power BI)`;
     log(`powerbi fetch for ${c.id}: ${JSON.stringify(r.stats)}`);
   }
   const fr = freshness(dataAsOf);
   if (fr.level === 'blocked') return res.status(409).json({ error: `Data is ${fr.daysOld} days old (limit ${config.staleBlockDays}). Refresh / re-export it first.` });
   const delivery = cleanDelivery(c.delivery, c.source);
-  const { send, holdout, funnel } = applyDelivery(audience, delivery, (dataAsOf ?? now()).slice(0, 10), c.segmentName, c.id);
-  if (send.length === 0) return res.status(409).json({ error: 'Nobody left to send to after the delivery rules' });
+  const { tag, holdout, funnel } = applyDelivery(audience, delivery, (dataAsOf ?? now()).slice(0, 10), c.segmentName, c.id);
+  if (tag.length === 0) return res.status(409).json({ error: 'Nobody left to tag after the delivery rules' });
 
   const snap: Snapshot = {
     cohortId: c.id, rulesVersion: c.rulesVersion, source: c.source, dataAsOf, createdAt: now(),
-    audience: send.map(({ customer_id, email_hash, email_enc }) => ({ customer_id, email_hash, email_enc })),
-    holdout: holdout.map(({ customer_id, email_hash }) => ({ customer_id, email_hash })),
+    audience: tag.map(({ customer_id, fynd_user_id }) => ({ customer_id, fynd_user_id })),
+    holdout: holdout.map(({ customer_id, fynd_user_id }) => ({ customer_id, fynd_user_id })),
   };
   store.saveSnapshot(snap);
-  Object.assign(c, { status: 'approved', approvedBy: u.id, approvedAt: now(), snapshotCount: send.length, holdoutCount: holdout.length, funnel, dataAsOf });
-  c.history.push({ at: now(), by: u.id, action: 'approved', note: `${send.length} to send${holdout.length ? `, ${holdout.length} in control group` : ''} locked` });
+  Object.assign(c, { status: 'approved', approvedBy: u.id, approvedAt: now(), snapshotCount: tag.length, holdoutCount: holdout.length, funnel, dataAsOf });
+  c.history.push({ at: now(), by: u.id, action: 'approved', note: `${tag.length} to tag${holdout.length ? `, ${holdout.length} in control group` : ''} locked${skipped}` });
   store.saveCohort(c);
   log(`cohort ${c.id} approved: ${snap.audience.length} customers`);
   res.json(c);
 }));
 
-/** Push the locked snapshot. One run at a time per cohort; a failed run can be retried with the same snapshot. */
-app.post('/api/cohorts/:id/push', h(async (req, res) => {
-  const u = userOf(req); can(u, 'approver');
-  const c = getCohort(req.params.id);
-  if (c.status === 'pushing') return res.status(409).json({ error: 'A push for this cohort is already running' });
-  if (!['approved', 'failed', 'pushed'].includes(c.status)) return res.status(409).json({ error: 'Approve the cohort first' });
-  const snap = store.getSnapshot(c.id);
-  if (!snap || snap.rulesVersion !== c.rulesVersion) return res.status(409).json({ error: 'No locked snapshot for this version' });
-
-  const run: Run = {
-    id: `run_${crypto.randomUUID().slice(0, 8)}`, cohortId: c.id, segmentName: c.segmentName,
-    mode: ctConfigured() ? 'clevertap' : 'dry-run', startedBy: u.id, startedAt: now(), status: 'running', steps: [],
-  };
-  c.status = 'pushing'; store.saveCohort(c); store.saveRun(run);
+/**
+ * Tag the locked snapshot in CleverTap. Answers at once; the upload runs in the background and the
+ * user follows it on the Audiences and History pages ("In progress" → "Done" / "Failed" + reason).
+ * One run at a time per cohort. A failed run can be retried: same locked audience, same segment (replaced).
+ */
+async function runTagging(c: Cohort, snap: Snapshot, run: Run, by: string) {
   try {
-    await pushToCleverTap(snap, run, u.id, () => store.saveRun(run));
-    run.status = 'success'; c.status = 'pushed';
-    if (run.mode === 'clevertap') { snap.pushedAt = now(); store.saveSnapshot(snap); }   // feeds "not messaged in the last N days"
-    c.history.push({ at: now(), by: u.id, action: run.mode === 'dry-run' ? 'dry run' : 'pushed to CleverTap', note: `${run.rowsSent} rows` });
+    await tagInCleverTap(snap, run, by, () => store.saveRun(run), { retryWaitMs: Number(process.env.CT_RETRY_WAIT_MS ?? 2000) });
+    run.status = 'success'; c.status = 'tagged';
+    if (run.mode === 'clevertap') { snap.taggedAt = now(); store.saveSnapshot(snap); }   // feeds "not tagged in the last N days"
+    c.history.push({ at: now(), by, action: run.mode === 'dry-run' ? 'dry run done' : 'tagged in CleverTap', note: `${run.rowsTagged?.toLocaleString()} Fynd user IDs` });
   } catch (e) {
     run.status = 'failed'; run.error = (e as Error).message; c.status = 'failed';
-    c.history.push({ at: now(), by: u.id, action: 'push failed', note: run.error });
+    run.failedStep = e instanceof StepError ? e.step : run.steps.at(-1)?.step;
+    c.history.push({ at: now(), by, action: 'tagging failed', note: `${run.failedStep ? `${run.failedStep}: ` : ''}${run.error}` });
   }
-  run.finishedAt = now(); store.saveRun(run); store.saveCohort(c);
-  log(`run ${run.id} (${run.mode}) ${run.status}: ${run.rowsSent ?? 0} rows`);
-  res.json({ cohort: c, run });
+  run.finishedAt = now(); store.saveRun(run);
+  const latest = store.getCohort(c.id)!;                 // keep any history written meanwhile
+  store.saveCohort({ ...latest, status: c.status, history: c.history });
+  log(`run ${run.id} (${run.mode}, attempt ${run.attempt}) ${run.status}: ${run.rowsTagged ?? 0} IDs`);
+}
+
+const startTagging = h((req, res) => {
+  const u = userOf(req); can(u, 'approver');
+  const c = getCohort(req.params.id);
+  if (c.status === 'tagging') return res.status(409).json({ error: 'Tagging for this audience is already in progress' });
+  if (!['approved', 'failed', 'tagged'].includes(c.status)) return res.status(409).json({ error: 'Approve the audience first' });
+  const snap = store.getSnapshot(c.id);
+  if (!snap || snap.rulesVersion !== c.rulesVersion) return res.status(409).json({ error: 'No locked audience for this version' });
+  if (snap.idsPurged || snap.audience.length === 0) return res.status(409).json({ error: 'The locked ID list is no longer stored (older than the log retention, or locked before the switch to Fynd user IDs). Build and approve the audience again.' });
+
+  const attempt = store.runs().filter(r => r.cohortId === c.id).length + 1;
+  const run: Run = {
+    id: `run_${crypto.randomUUID().slice(0, 8)}`, cohortId: c.id, segmentName: c.segmentName,
+    mode: ctConfigured() ? 'clevertap' : 'dry-run', startedBy: u.id, startedAt: now(), status: 'running', steps: [], attempt,
+  };
+  c.status = 'tagging';
+  c.history.push({ at: now(), by: u.id, action: attempt > 1 ? `started tagging (attempt ${attempt})` : 'started tagging' });
+  store.saveCohort(c); store.saveRun(run);
+  res.status(202).json({ cohort: c, run });
+  void runTagging(c, snap, run, u.id);
+});
+app.post('/api/cohorts/:id/tag', startTagging);
+app.post('/api/cohorts/:id/push', startTagging);           // old name, kept for scripts
+
+app.get('/api/cohorts/:id', h((req, res) => { userOf(req); res.json(getCohort(req.params.id)); }));
+
+// ── History: every approved segment for at least LOG_RETENTION_DAYS (≥ 90): who, when, counts, the IDs added ──
+app.get('/api/history', h((req, res) => {
+  userOf(req);
+  const runs = store.runs();
+  const since = new Date(Date.now() - config.logRetentionDays * 864e5).toISOString();
+  const lastAt = (c: Cohort) => c.history.at(-1)?.at ?? c.createdAt;     // the same clock retention uses
+  const items = store.cohorts().filter(c => c.approvedAt && lastAt(c) >= since).map(c => {
+    const s = store.getSnapshot(c.id);
+    const mine = runs.filter(r => r.cohortId === c.id);
+    return {
+      cohortId: c.id, name: c.name, segmentName: c.segmentName, status: c.status, source: c.source, rules: c.rules,
+      createdBy: c.createdBy, createdAt: c.createdAt, approvedBy: c.approvedBy, approvedAt: c.approvedAt,
+      taggedAt: s?.taggedAt, taggedBy: [...c.history].reverse().find(h => h.action === 'tagged in CleverTap')?.by,
+      matched: c.funnel?.[0]?.count, tagged: c.snapshotCount, control: c.holdoutCount, dataAsOf: c.dataAsOf,
+      idsAvailable: Boolean(s && !s.idsPurged && s.audience.length), keepUntil: new Date(Date.parse(lastAt(c)) + config.logRetentionDays * 864e5).toISOString(),
+      runs: mine, history: c.history,
+    };
+  }).sort((a, b) => b.approvedAt!.localeCompare(a.approvedAt!));
+  res.json({ retentionDays: config.logRetentionDays, items });
+}));
+
+/** The Fynd user IDs in a segment (tagged + control group), paged and searchable. */
+app.get('/api/cohorts/:id/ids', h((req, res) => {
+  userOf(req);
+  const c = getCohort(req.params.id);
+  const s = store.getSnapshot(c.id);
+  if (!s || s.idsPurged) return res.status(410).json({ error: 'The ID list for this segment is no longer stored' });
+  const all = [...s.audience.map(a => ({ ...a, group: 'tagged' })), ...(s.holdout ?? []).map(a => ({ ...a, group: 'control' }))];
+  const q = String(req.query.q ?? '').trim().toLowerCase();
+  const hit = q ? all.filter(a => a.fynd_user_id.toLowerCase().includes(q) || a.customer_id.toLowerCase().includes(q)) : all;
+  const pageSize = Math.min(Math.max(Number(req.query.pageSize) || 50, 10), 500);
+  const page = Math.min(Math.max(Number(req.query.page) || 1, 1), Math.max(1, Math.ceil(hit.length / pageSize)));
+  res.json({ total: hit.length, tagged: s.audience.length, control: s.holdout?.length ?? 0, page, pageSize, rows: hit.slice((page - 1) * pageSize, page * pageSize) });
+}));
+app.get('/api/cohorts/:id/ids.csv', h((req, res) => {
+  const u = userOf(req);
+  const c = getCohort(req.params.id);
+  const s = store.getSnapshot(c.id);
+  if (!s || s.idsPurged) return res.status(410).json({ error: 'The ID list for this segment is no longer stored' });
+  const q = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  const lines = ['fynd_user_id,customer_id,group', ...s.audience.map(a => `${q(a.fynd_user_id)},${q(a.customer_id)},tagged`),
+    ...(s.holdout ?? []).map(a => `${q(a.fynd_user_id)},${q(a.customer_id)},control`)];
+  log(`ids.csv for ${c.id} downloaded by ${u.id} (${lines.length - 1} rows)`);
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', `attachment; filename="${c.segmentName}_fynd_user_ids.csv"`);
+  res.send(lines.join('\n') + '\n');
 }));
 
 app.get('/api/runs', h((req, res) => { userOf(req); res.json(store.runs()); }));
@@ -358,8 +425,18 @@ app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: 
 });
 
 store.purgeExpired();
+store.purgeOldLogs(config.logRetentionDays);
 seedExamples();
-setInterval(() => { const n = store.purgeExpired(); if (n) log(`retention: deleted ${n} expired datasets`); }, 3600_000).unref();
+// A run that was in progress when the API stopped can't finish: mark it failed so it can be retried.
+for (const r of store.runs().filter(r => r.status === 'running')) {
+  Object.assign(r, { status: 'failed', error: 'Interrupted: the app restarted during tagging', failedStep: r.steps.at(-1)?.step, finishedAt: now() });
+  store.saveRun(r);
+  const c = store.getCohort(r.cohortId);
+  if (c?.status === 'tagging') { c.status = 'failed'; c.history.push({ at: now(), by: 'system', action: 'tagging failed', note: r.error }); store.saveCohort(c); }
+}
+setInterval(() => {
+  const n = store.purgeExpired(); if (n) log(`retention: deleted ${n} expired datasets`);
+  const m = store.purgeOldLogs(config.logRetentionDays); if (m) log(`log retention: cleared ${m} records older than ${config.logRetentionDays} days`);
+}, 3600_000).unref();
 
-if (!keysReady()) console.warn('⚠  Encryption keys missing. Run: npm run keys');
 app.listen(config.port, () => log(`API on http://localhost:${config.port}  | CleverTap: ${ctConfigured() ? config.ct.baseUrl : 'dry-run'} | Power BI: ${pbiConfigured() ? 'configured' : 'not configured'}`));

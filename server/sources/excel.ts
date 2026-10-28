@@ -2,15 +2,16 @@ import ExcelJS from 'exceljs';
 import { Readable } from 'node:stream';
 import crypto from 'node:crypto';
 import { config } from '../config.js';
-import { encrypt, hashEmail, isValidEmail, maskEmail, normaliseEmail } from '../crypto.js';
 import type { CustomerRow, Dataset, FieldKey, OrderLine, ValidationReport } from '../model.js';
 import { withDerived } from '../filter.js';
 
-type InternalField = Exclude<FieldKey, 'days_since_last_purchase' | 'aov' | 'customer_type'> | 'customer_id' | 'email' | 'phone';
+type InternalField = Exclude<FieldKey, 'days_since_last_purchase' | 'aov' | 'customer_type'> | 'customer_id' | 'fynd_user_id' | 'email' | 'phone';
 
 /** Header aliases (case/space-insensitive). Power BI "Customer Audience" export names are included. */
 const ALIASES: Record<InternalField, string[]> = {
   customer_id: ['customer id', 'customer_id', 'customerid', 'cust id', 'id'],
+  fynd_user_id: ['fynd user id', 'fynd_user_id', 'fynduserid', 'fynd id', 'fynd_id', 'user id', 'user_id', 'clevertap identity', 'identity'],
+  // Recognised only so they can be ignored: their values are never read.
   email: ['email', 'email id', 'email_id', 'customer email', 'e-mail', 'email address'],
   phone: ['phone', 'phone number', 'mobile', 'mobile number', 'contact number'],
   registered_at: ['registered at', 'registered_at', 'registration date', 'signup date'],
@@ -67,13 +68,13 @@ const toNumber = (v: unknown): number | null | undefined => {
 };
 
 /**
- * Parse + validate an uploaded file. The file buffer is only held in memory; emails are
- * encrypted and hashed row by row and the plain value is dropped immediately.
+ * Parse + validate an uploaded file. The file buffer is only held in memory. Only the Fynd user ID
+ * (the CleverTap identity) and purchase fields are read; email and phone columns are skipped unread.
  */
 export async function ingestExcel(buf: Buffer, fileName: string, uploadedBy: string, dataAsOf: string): Promise<Dataset> {
   const report: ValidationReport = {
     totalRows: 0, validRows: 0, columnsFound: {}, ignoredColumns: [], errors: [], warnings: [],
-    rowIssues: { missingId: 0, invalidEmail: 0, internalDomain: 0, duplicateEmail: 0, badDate: 0, badNumber: 0 },
+    rowIssues: { missingId: 0, duplicateId: 0, badDate: 0, badNumber: 0 },
   };
   const wb = new ExcelJS.Workbook();
   try {
@@ -98,18 +99,17 @@ export async function ingestExcel(buf: Buffer, fileName: string, uploadedBy: str
     if (found.size >= 2) { headerRow = r; found.forEach((f, c) => colMap.set(c, f)); }
   }
   if (!headerRow) {
-    report.errors.push('No header row found. The file needs at least "Customer ID" and "Email" columns.');
+    report.errors.push('No header row found. The file needs a "Fynd User ID" column and at least one purchase column.');
     throw Object.assign(new Error('Validation failed'), { report });
   }
   ws.getRow(headerRow).eachCell((cell, col) => {
     const h = String(cellValue(cell.value) ?? '');
     const f = colMap.get(col);
     if (!f) report.ignoredColumns.push(h);
-    else if (f === 'phone') report.ignoredColumns.push(`${h} (phone is never used)`);
+    else if (f === 'phone' || f === 'email') { report.ignoredColumns.push(`${h} (not read: the app never uses ${f})`); colMap.delete(col); }
     else report.columnsFound[f] = h;
   });
-  if (!report.columnsFound.customer_id) report.errors.push('Missing required column: Customer ID');
-  if (!report.columnsFound.email) report.errors.push('Missing required column: Email');
+  if (!report.columnsFound.fynd_user_id) report.errors.push('Missing required column: Fynd User ID (the identity CleverTap knows each customer by)');
   if (report.errors.length) throw Object.assign(new Error('Validation failed'), { report });
 
   const rows: CustomerRow[] = [];
@@ -124,17 +124,13 @@ export async function ingestExcel(buf: Buffer, fileName: string, uploadedBy: str
       for (const [col, field] of colMap) if (field === f) return cellValue(row.getCell(col).value);
       return undefined;
     };
-    const id = String(get('customer_id') ?? '').trim();
-    if (!id) { report.rowIssues.missingId++; continue; }
-    let email = normaliseEmail(get('email'));
-    if (!isValidEmail(email)) { report.rowIssues.invalidEmail++; continue; }
-    if (config.excludeDomains.includes(email.split('@')[1])) { report.rowIssues.internalDomain++; continue; }
-    const hash = hashEmail(email);
-    if (seen.has(hash)) { report.rowIssues.duplicateEmail++; continue; }
-    seen.add(hash);
+    const fynd = String(get('fynd_user_id') ?? '').trim();
+    if (!fynd) { report.rowIssues.missingId++; continue; }
+    const id = String(get('customer_id') ?? '').trim() || fynd;        // no Customer ID column: the Fynd ID is the key
+    if (seen.has(fynd) || seen.has(`c:${id}`)) { report.rowIssues.duplicateId++; continue; }
+    seen.add(fynd); seen.add(`c:${id}`);
 
-    const out: CustomerRow = { customer_id: id, email_hash: hash, email_enc: encrypt(email), email_masked: maskEmail(email) };
-    email = '';                                                       // plain email not kept
+    const out: CustomerRow = { customer_id: id, fynd_user_id: fynd };
     for (const f of ['registered_at', 'first_purchase_date', 'last_purchase_date'] as const) {
       const d = toIsoDate(get(f));
       if (d === null) report.rowIssues.badDate++; else if (d) out[f] = d;
@@ -160,7 +156,7 @@ export async function ingestExcel(buf: Buffer, fileName: string, uploadedBy: str
   const os = wb.worksheets.find(w => w !== ws && /order/i.test(w.name));
   if (os) {
     const OL: Record<string, string[]> = {
-      customer_id: ALIASES.customer_id, order_date: ['order date', 'order_date', 'date', 'purchase date'],
+      customer_id: report.columnsFound.customer_id ? ALIASES.customer_id : ALIASES.fynd_user_id, order_date: ['order date', 'order_date', 'date', 'purchase date'],
       category: ['category', 'product category'], amount: ['amount', 'line gmv', 'line_gmv', 'gmv', 'value', 'price'],
     };
     const cols: Record<string, number> = {};
@@ -189,20 +185,18 @@ export async function ingestExcel(buf: Buffer, fileName: string, uploadedBy: str
         report.columnsFound.categories = `${os.name} → Category`;
       }
       if (skipped) report.warnings.push(`${skipped} order lines skipped: customer not in the customer sheet (or skipped there)`);
-    } else report.warnings.push(`Sheet "${os.name}" ignored: it needs Customer ID and Category columns`);
+    } else report.warnings.push(`Sheet "${os.name}" ignored: it needs ${report.columnsFound.customer_id ? 'Customer ID' : 'Fynd User ID'} and Category columns`);
   }
   if (rows.length === 0) report.errors.push('No usable rows after validation');
   if (report.errors.length) throw Object.assign(new Error('Validation failed'), { report });
 
   const ri = report.rowIssues;
-  if (ri.missingId) report.warnings.push(`${ri.missingId} rows skipped: no Customer ID`);
-  if (ri.invalidEmail) report.warnings.push(`${ri.invalidEmail} rows skipped: invalid email`);
-  if (ri.internalDomain) report.warnings.push(`${ri.internalDomain} rows skipped: internal domain (${config.excludeDomains.join(', ')})`);
-  if (ri.duplicateEmail) report.warnings.push(`${ri.duplicateEmail} rows skipped: duplicate email`);
+  if (ri.missingId) report.warnings.push(`${ri.missingId} rows skipped: no Fynd User ID`);
+  if (ri.duplicateId) report.warnings.push(`${ri.duplicateId} rows skipped: duplicate Fynd User ID / Customer ID`);
   if (ri.badDate) report.warnings.push(`${ri.badDate} date cells could not be read and were left blank`);
   if (ri.badNumber) report.warnings.push(`${ri.badNumber} number cells could not be read and were left blank`);
   const fieldsAvailable = withDerived(Object.keys(report.columnsFound)
-    .filter(f => f !== 'customer_id' && f !== 'email' && f !== 'phone') as FieldKey[]);
+    .filter(f => !['customer_id', 'fynd_user_id', 'email', 'phone'].includes(f)) as FieldKey[]);
   const missing = (['last_purchase_date', 'lifetime_order_count', 'categories'] as FieldKey[]).filter(f => !fieldsAvailable.includes(f));
   if (missing.length) report.warnings.push(`Not in this file, so these filters are unavailable: ${missing.join(', ')}`);
 

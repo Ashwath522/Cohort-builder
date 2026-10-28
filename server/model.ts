@@ -1,9 +1,7 @@
 /** The ONE internal format every source must produce (Excel and Power BI alike). */
 export interface CustomerRow {
-  customer_id: string;
-  email_hash: string;      // HMAC-SHA256 of the normalised email (one-way, keyed)
-  email_enc: string;       // AES-256-GCM ciphertext, base64 (reversible only with ENC_KEY)
-  email_masked: string;    // r***@gmail.com, safe to show
+  customer_id: string;     // key inside the data (joins order lines and filter buttons)
+  fynd_user_id: string;    // the CleverTap identity: the only thing ever uploaded. No email or phone is read.
   registered_at?: string;  // YYYY-MM-DD
   first_purchase_date?: string;
   last_purchase_date?: string;
@@ -24,9 +22,9 @@ export type SortKey = 'last_purchase_date' | 'first_purchase_date' | 'registered
 export interface Delivery {
   sortBy: SortKey;
   dir: 'asc' | 'desc';
-  limit?: number;          // send only the top N after sorting (Excel source)
+  limit?: number;          // tag only the top N after sorting (Excel source)
   holdoutPct: number;      // 0–50: random control group kept aside to measure lift
-  suppressDays: number;    // 0 = off; skip people pushed in another campaign in the last N days
+  suppressDays: number;    // 0 = off; skip people tagged in another segment in the last N days
   seed?: string;           // picks the control group; fixed when the audience is first built, so preview = approval
 }
 
@@ -68,7 +66,7 @@ export interface ValidationReport {
   ignoredColumns: string[];
   errors: string[];                          // file-level problems (reject)
   warnings: string[];
-  rowIssues: { missingId: number; invalidEmail: number; internalDomain: number; duplicateEmail: number; badDate: number; badNumber: number };
+  rowIssues: { missingId: number; duplicateId: number; badDate: number; badNumber: number };
   orderLines?: { sheet: string; rows: number; skipped: number };
 }
 
@@ -87,7 +85,7 @@ export interface Dataset {
   orderLines?: OrderLine[];
 }
 
-export type CohortStatus = 'draft' | 'pending_approval' | 'approved' | 'rejected' | 'pushing' | 'pushed' | 'failed';
+export type CohortStatus = 'draft' | 'pending_approval' | 'approved' | 'rejected' | 'tagging' | 'tagged' | 'failed';
 
 export interface Cohort {
   id: string;
@@ -106,7 +104,7 @@ export interface Cohort {
   approvedBy?: string;
   approvedAt?: string;
   rejectedReason?: string;
-  snapshotCount?: number;   // locked audience size (people who will be sent)
+  snapshotCount?: number;   // locked audience size (people who will be tagged)
   holdoutCount?: number;    // control group kept aside
   delivery?: Delivery;
   funnel?: Array<{ step: string; count: number; aside?: boolean }>;
@@ -119,9 +117,10 @@ export interface Snapshot {
   source: string;
   dataAsOf?: string;
   createdAt: string;
-  audience: Array<Pick<CustomerRow, 'customer_id' | 'email_hash' | 'email_enc'>>;
-  holdout?: Array<Pick<CustomerRow, 'customer_id' | 'email_hash'>>;   // not sent; for measuring lift
-  pushedAt?: string;
+  audience: Array<Pick<CustomerRow, 'customer_id' | 'fynd_user_id'>>;
+  holdout?: Array<Pick<CustomerRow, 'customer_id' | 'fynd_user_id'>>;  // not tagged; for measuring lift
+  taggedAt?: string;
+  idsPurged?: boolean;      // ID lists removed after LOG_RETENTION_DAYS
 }
 
 export interface Run {
@@ -133,9 +132,11 @@ export interface Run {
   startedAt: string;
   finishedAt?: string;
   status: 'running' | 'success' | 'failed';
-  rowsSent?: number;
+  rowsTagged?: number;
   csvBytes?: number;
   csvSha256?: string;
   steps: Array<{ at: string; step: string; ok: boolean; detail?: string }>;
   error?: string;
+  failedStep?: string;      // which step stopped the run
+  attempt: number;          // 1 = first try, 2+ = retries of the same locked audience
 }
